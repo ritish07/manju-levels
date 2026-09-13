@@ -1,43 +1,208 @@
 'use client';
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Activity, BarChart3, ChevronDown, Crosshair, Layers3, RefreshCw, Settings2, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  Activity,
+  BarChart3,
+  ChevronDown,
+  Crosshair,
+  Layers3,
+  RefreshCw,
+  Settings2,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 
 type AssetKey = 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
 type Side = 'CE' | 'PE';
 type Timeframe = '1m' | '3m' | '5m' | '15m' | '30m' | '1H' | '4H' | 'D' | 'M';
-type Candle = { open: number; high: number; low: number; close: number; volume: number; time: string };
+type Candle = {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  time: string;
+};
 type ChartLevel = { value: number; label: string; color: string };
-const TIMEFRAMES: Timeframe[] = ['1m', '3m', '5m', '15m', '30m', '1H', '4H', 'D', 'M'];
-const INTERVAL_MINUTES: Record<Timeframe, number> = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1H': 60, '4H': 240, D: 1440, M: 43200 };
-
-const ASSETS: Record<AssetKey, { name: string; short: string; spot: number; weeklyOpen: number; step: number; change: number }> = {
-  NIFTY: { name: 'NIFTY 50', short: 'NIFTY', spot: 25114.0, weeklyOpen: 25114.0, step: 50, change: 0.42 },
-  BANKNIFTY: { name: 'NIFTY BANK', short: 'BANK NIFTY', spot: 54886.35, weeklyOpen: 57343.3, step: 100, change: -0.18 },
-  SENSEX: { name: 'BSE SENSEX', short: 'SENSEX', spot: 81721.08, weeklyOpen: 81721.08, step: 100, change: 0.31 },
+type ChainLeg = {
+  ltp: number;
+  oi: number;
+  previousClose: number;
+  securityId: number;
+} | null;
+type LiveSnapshot = {
+  connected: boolean;
+  spot: number;
+  expiry: string;
+  expiries: string[];
+  weeklyOpen: number;
+  selectedStrike: number;
+  underlyingCandles: Candle[];
+  optionCandles: Candle[];
+  chain: { strike: number; ce: ChainLeg; pe: ChainLeg }[];
+  updatedAt: string;
+};
+const TIMEFRAMES: Timeframe[] = [
+  '1m',
+  '3m',
+  '5m',
+  '15m',
+  '30m',
+  '1H',
+  '4H',
+  'D',
+  'M',
+];
+const INTERVAL_MINUTES: Record<Timeframe, number> = {
+  '1m': 1,
+  '3m': 3,
+  '5m': 5,
+  '15m': 15,
+  '30m': 30,
+  '1H': 60,
+  '4H': 240,
+  D: 1440,
+  M: 43200,
 };
 
-function seeded(seed: number) { let s = seed; return () => ((s = Math.imul(1664525, s) + 1013904223) >>> 0) / 4294967296; }
-function makeCandles(base: number, seed: number, option = false, timeframe: Timeframe = '5m'): Candle[] {
-  const interval = INTERVAL_MINUTES[timeframe]; const tfSeed = TIMEFRAMES.indexOf(timeframe) * 7919; const rnd = seeded(seed + tfSeed); let last = base * (0.992 + rnd() * 0.012); const scale = Math.sqrt(Math.max(interval / 5, .2)); const volatility = (option ? Math.max(base * 0.055, 1.8) : base * 0.00055) * scale;
-  return Array.from({ length: 180 }, (_, i) => { const drift = Math.sin(i / 8) * volatility * 0.18 + (i > 58 ? volatility * 0.08 : 0); const open = last; const close = Math.max(option ? 2 : 1, open + (rnd() - 0.47) * volatility + drift); const high = Math.max(open, close) + rnd() * volatility * 0.65; const low = Math.max(0.1, Math.min(open, close) - rnd() * volatility * 0.65); last = close; const totalMinutes = 9 * 60 + 15 + i * interval; const time = timeframe === 'M' ? new Date(2026, i % 12, 1).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }) : timeframe === 'D' ? `${String((i % 28) + 1).padStart(2, '0')} Sep` : `${String(Math.floor((totalMinutes / 60) % 24)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`; return { open, high, low, close, volume: 24 + rnd() * 76, time }; });
-}
-function formatPrice(n: number) { return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+const ASSETS: Record<
+  AssetKey,
+  {
+    name: string;
+    short: string;
+    spot: number;
+    weeklyOpen: number;
+    step: number;
+    change: number;
+  }
+> = {
+  NIFTY: {
+    name: 'NIFTY 50',
+    short: 'NIFTY',
+    spot: 25114.0,
+    weeklyOpen: 25114.0,
+    step: 50,
+    change: 0.42,
+  },
+  BANKNIFTY: {
+    name: 'NIFTY BANK',
+    short: 'BANK NIFTY',
+    spot: 54886.35,
+    weeklyOpen: 57343.3,
+    step: 100,
+    change: -0.18,
+  },
+  SENSEX: {
+    name: 'BSE SENSEX',
+    short: 'SENSEX',
+    spot: 81721.08,
+    weeklyOpen: 81721.08,
+    step: 100,
+    change: 0.31,
+  },
+};
 
-function targetLabel(step: number) { return `T${Number.isInteger(step) ? step : step.toFixed(1)}`; }
+function seeded(seed: number) {
+  let s = seed;
+  return () => ((s = Math.imul(1664525, s) + 1013904223) >>> 0) / 4294967296;
+}
+function makeCandles(
+  base: number,
+  seed: number,
+  option = false,
+  timeframe: Timeframe = '5m',
+): Candle[] {
+  const interval = INTERVAL_MINUTES[timeframe];
+  const tfSeed = TIMEFRAMES.indexOf(timeframe) * 7919;
+  const rnd = seeded(seed + tfSeed);
+  let last = base * (0.992 + rnd() * 0.012);
+  const scale = Math.sqrt(Math.max(interval / 5, 0.2));
+  const volatility =
+    (option ? Math.max(base * 0.055, 1.8) : base * 0.00055) * scale;
+  return Array.from({ length: 180 }, (_, i) => {
+    const drift =
+      Math.sin(i / 8) * volatility * 0.18 + (i > 58 ? volatility * 0.08 : 0);
+    const open = last;
+    const close = Math.max(
+      option ? 2 : 1,
+      open + (rnd() - 0.47) * volatility + drift,
+    );
+    const high = Math.max(open, close) + rnd() * volatility * 0.65;
+    const low = Math.max(
+      0.1,
+      Math.min(open, close) - rnd() * volatility * 0.65,
+    );
+    last = close;
+    const totalMinutes = 9 * 60 + 15 + i * interval;
+    const time =
+      timeframe === 'M'
+        ? new Date(2026, i % 12, 1).toLocaleDateString('en-IN', {
+            month: 'short',
+            year: '2-digit',
+          })
+        : timeframe === 'D'
+          ? `${String((i % 28) + 1).padStart(2, '0')} Sep`
+          : `${String(Math.floor((totalMinutes / 60) % 24)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`;
+    return { open, high, low, close, volume: 24 + rnd() * 76, time };
+  });
+}
+function formatPrice(n: number) {
+  return n.toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+function formatExpiry(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value || 'Loading';
+  return new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+function targetLabel(step: number) {
+  return `T${Number.isInteger(step) ? step : step.toFixed(1)}`;
+}
 
 function makeOptionLevels(open: number): ChartLevel[] {
   const halfStep = 1.5 * Math.sqrt(open);
-  const resistance = Array.from({ length: 16 }, (_, i) => ({ value: open + (i + 1) * halfStep, label: targetLabel(1 + i * .5), color: '#d94b52' }));
-  const support = Array.from({ length: 16 }, (_, i) => ({ value: open - (i + 1) * halfStep, label: targetLabel(1 + i * .5), color: '#2e9b67' })).filter(level => level.value > 0);
+  const resistance = Array.from({ length: 16 }, (_, i) => ({
+    value: open + (i + 1) * halfStep,
+    label: targetLabel(1 + i * 0.5),
+    color: '#d94b52',
+  }));
+  const support = Array.from({ length: 16 }, (_, i) => ({
+    value: open - (i + 1) * halfStep,
+    label: targetLabel(1 + i * 0.5),
+    color: '#2e9b67',
+  })).filter((level) => level.value > 0);
   return [...resistance, ...support];
 }
 
 function makeWeeklyLevels(open: number): ChartLevel[] {
   const root = Math.sqrt(open);
-  const resistancePrimary = Array.from({ length: 7 }, (_, i) => (root + i + 1) ** 2);
-  const supportPrimary = Array.from({ length: 7 }, (_, i) => (root - i - 1) ** 2);
-  const withMidpoints = (values: number[], color: string) => values.flatMap((value, i) => [{ value, label: targetLabel(i + 1), color }, ...(i < values.length - 1 ? [{ value: (value + values[i + 1]) / 2, label: targetLabel(i + 1.5), color }] : [])]);
+  const resistancePrimary = Array.from(
+    { length: 7 },
+    (_, i) => (root + i + 1) ** 2,
+  );
+  const supportPrimary = Array.from(
+    { length: 7 },
+    (_, i) => (root - i - 1) ** 2,
+  );
+  const withMidpoints = (values: number[], color: string) =>
+    values.flatMap((value, i) => [
+      { value, label: targetLabel(i + 1), color },
+      ...(i < values.length - 1
+        ? [
+            {
+              value: (value + values[i + 1]) / 2,
+              label: targetLabel(i + 1.5),
+              color,
+            },
+          ]
+        : []),
+    ]);
   const resistance = withMidpoints(resistancePrimary, '#d94b52');
   const support = withMidpoints(supportPrimary, '#2e9b67');
   return [...resistance, ...support];
@@ -45,39 +210,831 @@ function makeWeeklyLevels(open: number): ChartLevel[] {
 
 function ResizeHandle({ onDrag }: { onDrag: (deltaX: number) => void }) {
   const lastX = useRef<number | null>(null);
-  return <div className="pane-divider" onPointerDown={e => { lastX.current = e.clientX; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { if (lastX.current === null) return; const delta = e.clientX - lastX.current; lastX.current = e.clientX; onDrag(delta); }} onPointerUp={() => lastX.current = null} onPointerCancel={() => lastX.current = null}><span /></div>;
+  return (
+    <div
+      className="pane-divider"
+      onPointerDown={(e) => {
+        lastX.current = e.clientX;
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (lastX.current === null) return;
+        const delta = e.clientX - lastX.current;
+        lastX.current = e.clientX;
+        onDrag(delta);
+      }}
+      onPointerUp={() => (lastX.current = null)}
+      onPointerCancel={() => (lastX.current = null)}
+    >
+      <span />
+    </div>
+  );
 }
 
-function Chart({ title, subtitle, candles, levels, accent = false }: { title: string; subtitle: string; candles: Candle[]; levels: ChartLevel[]; accent?: boolean }) {
+function Chart({
+  title,
+  subtitle,
+  candles,
+  levels,
+  accent = false,
+}: {
+  title: string;
+  subtitle: string;
+  candles: Candle[];
+  levels: ChartLevel[];
+  accent?: boolean;
+}) {
   const priceClipId = `price-plot-${useId().replace(/:/g, '')}`;
-  const [zoom, setZoom] = useState(1); const [yZoom, setYZoom] = useState(1); const [offset, setOffset] = useState(0); const [yOffset, setYOffset] = useState(0); const [cross, setCross] = useState<{ x: number; y: number } | null>(null); const drag = useRef<({ mode: 'pan'; x: number; y: number; offset: number; yOffset: number; range: number } | { mode: 'x-scale'; x: number; offset: number; zoom: number } | { mode: 'y-scale'; y: number; yZoom: number }) | null>(null);
-  const stageRef = useRef<HTMLDivElement>(null); const [size, setSize] = useState({ width: 760, height: 480 });
-  useEffect(() => { const stage = stageRef.current; if (!stage) return; const update = () => setSize({ width: Math.max(320, stage.clientWidth), height: Math.max(300, stage.clientHeight) }); update(); const observer = new ResizeObserver(update); observer.observe(stage); return () => observer.disconnect(); }, []);
-  const width = size.width, height = size.height, plotH = height - 118, timeAxisTop = height - 42, padL = 10, padR = 94; const visibleCount = Math.min(candles.length, Math.max(24, Math.floor(92 / zoom))); const minOffset = -Math.floor(visibleCount * .65); const maxOffset = Math.max(0, candles.length - visibleCount); const panCeil = Math.ceil(offset); const start = Math.max(0, candles.length - visibleCount - panCeil); const view = candles.slice(start, start + visibleCount + 1);
-  const vals = candles.flatMap(c => [c.high, c.low]).concat(levels.map(level => level.value)); const dataMin = Math.min(...vals), dataMax = Math.max(...vals), dataRange = Math.max(dataMax - dataMin, 1); const midpoint = (dataMax + dataMin) / 2 + yOffset; const range = dataRange / yZoom; const min = midpoint - range / 2, max = midpoint + range / 2; const y = (v: number) => 18 + ((max - v) / range) * (plotH - 36); const plotW = width - padL - padR; const slot = plotW / visibleCount; const panShift = (offset - panCeil) * slot; const body = Math.max(2.5, Math.min(8, slot * 0.58)); const latest = candles[candles.length - 1]; const up = latest.close >= latest.open; const yTickCount = Math.max(6, Math.floor(plotH / 56)); const xTickCount = Math.max(4, Math.floor(plotW / 105));
-  const crossIndex = cross ? Math.round((cross.x - padL - slot / 2 - panShift) / slot) : -1; const crossCandle = crossIndex >= 0 && crossIndex < view.length ? view[crossIndex] : null; const crossX = crossCandle ? padL + crossIndex * slot + slot / 2 + panShift : cross?.x ?? 0; const crossPrice = cross ? max - ((cross.y - 18) / Math.max(plotH - 36, 1)) * range : 0;
-  const onWheel = (e: React.WheelEvent<SVGSVGElement>) => { e.preventDefault(); if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) setOffset(v => Math.min(maxOffset, Math.max(minOffset, v + e.deltaX / 12))); else setZoom(v => Math.min(5, Math.max(.65, v * (e.deltaY > 0 ? 0.9 : 1.12)))); };
-  return <section className={`chart-panel ${accent ? 'active-chart' : ''}`}>
-    <div className="chart-head"><div><div className="chart-title"><span className="symbol-mark">{title.slice(0, 1)}</span>{title}</div><div className="chart-sub">{subtitle} <span className={up ? 'positive' : 'negative'}>O {formatPrice(latest.open)} H {formatPrice(latest.high)} L {formatPrice(latest.low)} C {formatPrice(latest.close)}</span></div></div><div className="chart-tools"><button aria-label="Zoom out" onClick={() => setZoom(v => Math.max(.65, v / 1.25))}><ZoomOut /></button><button aria-label="Zoom in" onClick={() => setZoom(v => Math.min(5, v * 1.25))}><ZoomIn /></button><button aria-label="Reset chart" onClick={() => { setZoom(1); setYZoom(1); setOffset(0); setYOffset(0); }}><RefreshCw /></button></div></div>
-    <div ref={stageRef} className="chart-stage" style={{ backgroundColor: '#ffffff' }}><svg style={{ backgroundColor: '#ffffff' }} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" onWheel={onWheel} onPointerDown={e => { const rect = e.currentTarget.getBoundingClientRect(); const x = (e.clientX - rect.left) / rect.width * width, py = (e.clientY - rect.top) / rect.height * height; drag.current = x > plotW && py < timeAxisTop ? { mode: 'y-scale', y: e.clientY, yZoom } : py > timeAxisTop ? { mode: 'x-scale', x: e.clientX, offset, zoom } : { mode: 'pan', x: e.clientX, y: e.clientY, offset, yOffset, range }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { const rect = e.currentTarget.getBoundingClientRect(); const x = (e.clientX - rect.left) / rect.width * width, py = (e.clientY - rect.top) / rect.height * height; e.currentTarget.style.cursor = x > plotW && py < timeAxisTop ? 'ns-resize' : py > timeAxisTop ? 'ew-resize' : drag.current?.mode === 'pan' ? 'grabbing' : 'crosshair'; setCross({ x, y: py }); if (drag.current?.mode === 'pan') { setOffset(Math.min(maxOffset, Math.max(minOffset, drag.current.offset + (e.clientX - drag.current.x) * visibleCount / plotW))); setYOffset(drag.current.yOffset + (e.clientY - drag.current.y) * drag.current.range / Math.max(plotH - 36, 1)); } if (drag.current?.mode === 'x-scale') setZoom(Math.min(5, Math.max(.65, drag.current.zoom * Math.exp((drag.current.x - e.clientX) / 240)))); if (drag.current?.mode === 'y-scale') setYZoom(Math.min(5, Math.max(.55, drag.current.yZoom * Math.exp((drag.current.y - e.clientY) / 220)))); }} onPointerUp={() => drag.current = null} onPointerLeave={e => { drag.current = null; setCross(null); e.currentTarget.style.cursor = 'crosshair'; }}>
-      <defs><clipPath id={priceClipId}><rect x="0" y="0" width={plotW + padL} height={plotH} /></clipPath></defs>
-      {Array.from({ length: 10 }, (_, i) => <line key={`v-${i}`} x1={padL + i * plotW / 9} x2={padL + i * plotW / 9} y1={0} y2={plotH} stroke="#eceff1" strokeWidth="1" />)}
-      {Array.from({ length: 8 }, (_, i) => <line key={`h-${i}`} x1={0} x2={plotW + padL} y1={i * plotH / 7} y2={i * plotH / 7} stroke="#eceff1" strokeWidth="1" />)}
-      {Array.from({ length: yTickCount }, (_, i) => { const t = i / (yTickCount - 1); return <text key={i} x={width - padR + 8} y={22 + t * (plotH - 36)} className="axis-label">{formatPrice(max - t * range)}</text>; })}
-      {levels.map(level => { const levelY = y(level.value); return levelY >= 0 && levelY <= plotH ? <g key={`${level.color}-${level.label}-${level.value}`}><line x1={0} y1={levelY} x2={width - padR} y2={levelY} stroke={level.color} strokeWidth="1.35" strokeDasharray="5 4" /><text x={plotW - 8} y={Math.max(12, levelY - 5)} textAnchor="end" className="target-label" fill={level.color}>{level.label}</text><rect x={width - padR - 1} y={levelY - 10} width="80" height="20" rx="3" fill={level.color} /><text x={width - 20} y={levelY + 4} textAnchor="end" className="level-label">{formatPrice(level.value)}</text></g> : null; })}
-      {view.map((c, i) => { const cx = padL + i * slot + slot / 2 + panShift; const green = c.close >= c.open; const color = green ? '#089981' : '#f23645'; return <g key={start + i}><g clipPath={`url(#${priceClipId})`}><line x1={cx} x2={cx} y1={y(c.high)} y2={y(c.low)} stroke={color} strokeWidth="1.2" /><rect x={cx - body / 2} y={Math.min(y(c.open), y(c.close))} width={body} height={Math.max(1.5, Math.abs(y(c.open) - y(c.close)))} fill={color} stroke={color} strokeWidth="1.2" /></g><rect x={cx - body / 2} y={plotH + 10 + (1 - c.volume / 100) * 54} width={body} height={c.volume / 100 * 54} fill={green ? '#8bd8ca' : '#ffadb4'} opacity=".82" /></g>; })}
-      {cross && cross.x < plotW && cross.y >= 0 && cross.y < plotH && <g className="crosshair"><line x1={crossX} x2={crossX} y1={0} y2={timeAxisTop} /><line x1={0} x2={plotW} y1={cross.y} y2={cross.y} /><rect className="crosshair-label-bg" x={width - padR - 1} y={Math.max(1, Math.min(plotH - 23, cross.y - 11))} width="80" height="22" rx="3" /><text className="crosshair-label" x={width - 20} y={Math.max(16, Math.min(plotH - 8, cross.y + 4))} textAnchor="end">{formatPrice(crossPrice)}</text>{crossCandle && <><rect className="crosshair-label-bg" x={Math.max(2, Math.min(plotW - 68, crossX - 34))} y={timeAxisTop + 5} width="68" height="27" rx="3" /><text className="crosshair-label" x={Math.max(36, Math.min(plotW - 34, crossX))} y={timeAxisTop + 23} textAnchor="middle">{crossCandle.time}</text></>}</g>}
-      <line x1={0} x2={plotW + padL} y1={timeAxisTop} y2={timeAxisTop} stroke="#e2e5e8" strokeWidth="1" />
-      {Array.from({ length: xTickCount }, (_, i) => { const t = i / (xTickCount - 1); const ix = Math.floor(t * visibleCount - panShift / slot); const label = ix >= 0 && ix < view.length ? view[ix].time : ''; return <text key={i} x={padL + t * plotW} y={height - 15} textAnchor={i === 0 ? 'start' : i === xTickCount - 1 ? 'end' : 'middle'} className="axis-label">{label}</text>; })}
-    </svg></div><div className="chart-foot"><span><Activity /> Levels active · Formula preview</span><span>Scroll to zoom · Drag to pan</span></div>
-  </section>;
+  const [zoom, setZoom] = useState(1);
+  const [yZoom, setYZoom] = useState(1);
+  const [offset, setOffset] = useState(0);
+  const [yOffset, setYOffset] = useState(0);
+  const [cross, setCross] = useState<{ x: number; y: number } | null>(null);
+  const drag = useRef<
+    | (
+        | {
+            mode: 'pan';
+            x: number;
+            y: number;
+            offset: number;
+            yOffset: number;
+            range: number;
+          }
+        | { mode: 'x-scale'; x: number; offset: number; zoom: number }
+        | { mode: 'y-scale'; y: number; yZoom: number }
+      )
+    | null
+  >(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 760, height: 480 });
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const update = () =>
+      setSize({
+        width: Math.max(320, stage.clientWidth),
+        height: Math.max(300, stage.clientHeight),
+      });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, []);
+  const width = size.width,
+    height = size.height,
+    plotH = height - 118,
+    timeAxisTop = height - 42,
+    padL = 10,
+    padR = 94;
+  const visibleCount = Math.min(
+    candles.length,
+    Math.max(24, Math.floor(92 / zoom)),
+  );
+  const minOffset = -Math.floor(visibleCount * 0.65);
+  const maxOffset = Math.max(0, candles.length - visibleCount);
+  const panCeil = Math.ceil(offset);
+  const start = Math.max(0, candles.length - visibleCount - panCeil);
+  const view = candles.slice(start, start + visibleCount + 1);
+  const vals = candles
+    .flatMap((c) => [c.high, c.low])
+    .concat(levels.map((level) => level.value));
+  const dataMin = Math.min(...vals),
+    dataMax = Math.max(...vals),
+    dataRange = Math.max(dataMax - dataMin, 1);
+  const midpoint = (dataMax + dataMin) / 2 + yOffset;
+  const range = dataRange / yZoom;
+  const min = midpoint - range / 2,
+    max = midpoint + range / 2;
+  const y = (v: number) => 18 + ((max - v) / range) * (plotH - 36);
+  const plotW = width - padL - padR;
+  const slot = plotW / visibleCount;
+  const panShift = (offset - panCeil) * slot;
+  const body = Math.max(2.5, Math.min(8, slot * 0.58));
+  const latest = candles[candles.length - 1];
+  const up = latest.close >= latest.open;
+  const yTickCount = Math.max(6, Math.floor(plotH / 56));
+  const xTickCount = Math.max(4, Math.floor(plotW / 105));
+  const crossIndex = cross
+    ? Math.round((cross.x - padL - slot / 2 - panShift) / slot)
+    : -1;
+  const crossCandle =
+    crossIndex >= 0 && crossIndex < view.length ? view[crossIndex] : null;
+  const crossX = crossCandle
+    ? padL + crossIndex * slot + slot / 2 + panShift
+    : (cross?.x ?? 0);
+  const crossPrice = cross
+    ? max - ((cross.y - 18) / Math.max(plotH - 36, 1)) * range
+    : 0;
+  const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY))
+      setOffset((v) =>
+        Math.min(maxOffset, Math.max(minOffset, v + e.deltaX / 12)),
+      );
+    else
+      setZoom((v) =>
+        Math.min(5, Math.max(0.65, v * (e.deltaY > 0 ? 0.9 : 1.12))),
+      );
+  };
+  return (
+    <section className={`chart-panel ${accent ? 'active-chart' : ''}`}>
+      <div className="chart-head">
+        <div>
+          <div className="chart-title">
+            <span className="symbol-mark">{title.slice(0, 1)}</span>
+            {title}
+          </div>
+          <div className="chart-sub">
+            {subtitle}{' '}
+            <span className={up ? 'positive' : 'negative'}>
+              O {formatPrice(latest.open)} H {formatPrice(latest.high)} L{' '}
+              {formatPrice(latest.low)} C {formatPrice(latest.close)}
+            </span>
+          </div>
+        </div>
+        <div className="chart-tools">
+          <button
+            aria-label="Zoom out"
+            onClick={() => setZoom((v) => Math.max(0.65, v / 1.25))}
+          >
+            <ZoomOut />
+          </button>
+          <button
+            aria-label="Zoom in"
+            onClick={() => setZoom((v) => Math.min(5, v * 1.25))}
+          >
+            <ZoomIn />
+          </button>
+          <button
+            aria-label="Reset chart"
+            onClick={() => {
+              setZoom(1);
+              setYZoom(1);
+              setOffset(0);
+              setYOffset(0);
+            }}
+          >
+            <RefreshCw />
+          </button>
+        </div>
+      </div>
+      <div
+        ref={stageRef}
+        className="chart-stage"
+        style={{ backgroundColor: '#ffffff' }}
+      >
+        <svg
+          style={{ backgroundColor: '#ffffff' }}
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          onWheel={onWheel}
+          onPointerDown={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = ((e.clientX - rect.left) / rect.width) * width,
+              py = ((e.clientY - rect.top) / rect.height) * height;
+            drag.current =
+              x > plotW && py < timeAxisTop
+                ? { mode: 'y-scale', y: e.clientY, yZoom }
+                : py > timeAxisTop
+                  ? { mode: 'x-scale', x: e.clientX, offset, zoom }
+                  : {
+                      mode: 'pan',
+                      x: e.clientX,
+                      y: e.clientY,
+                      offset,
+                      yOffset,
+                      range,
+                    };
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = ((e.clientX - rect.left) / rect.width) * width,
+              py = ((e.clientY - rect.top) / rect.height) * height;
+            e.currentTarget.style.cursor =
+              x > plotW && py < timeAxisTop
+                ? 'ns-resize'
+                : py > timeAxisTop
+                  ? 'ew-resize'
+                  : drag.current?.mode === 'pan'
+                    ? 'grabbing'
+                    : 'crosshair';
+            setCross({ x, y: py });
+            if (drag.current?.mode === 'pan') {
+              setOffset(
+                Math.min(
+                  maxOffset,
+                  Math.max(
+                    minOffset,
+                    drag.current.offset +
+                      ((e.clientX - drag.current.x) * visibleCount) / plotW,
+                  ),
+                ),
+              );
+              setYOffset(
+                drag.current.yOffset +
+                  ((e.clientY - drag.current.y) * drag.current.range) /
+                    Math.max(plotH - 36, 1),
+              );
+            }
+            if (drag.current?.mode === 'x-scale')
+              setZoom(
+                Math.min(
+                  5,
+                  Math.max(
+                    0.65,
+                    drag.current.zoom *
+                      Math.exp((drag.current.x - e.clientX) / 240),
+                  ),
+                ),
+              );
+            if (drag.current?.mode === 'y-scale')
+              setYZoom(
+                Math.min(
+                  5,
+                  Math.max(
+                    0.55,
+                    drag.current.yZoom *
+                      Math.exp((drag.current.y - e.clientY) / 220),
+                  ),
+                ),
+              );
+          }}
+          onPointerUp={() => (drag.current = null)}
+          onPointerLeave={(e) => {
+            drag.current = null;
+            setCross(null);
+            e.currentTarget.style.cursor = 'crosshair';
+          }}
+        >
+          <defs>
+            <clipPath id={priceClipId}>
+              <rect x="0" y="0" width={plotW + padL} height={plotH} />
+            </clipPath>
+          </defs>
+          {Array.from({ length: 10 }, (_, i) => (
+            <line
+              key={`v-${i}`}
+              x1={padL + (i * plotW) / 9}
+              x2={padL + (i * plotW) / 9}
+              y1={0}
+              y2={plotH}
+              stroke="#eceff1"
+              strokeWidth="1"
+            />
+          ))}
+          {Array.from({ length: 8 }, (_, i) => (
+            <line
+              key={`h-${i}`}
+              x1={0}
+              x2={plotW + padL}
+              y1={(i * plotH) / 7}
+              y2={(i * plotH) / 7}
+              stroke="#eceff1"
+              strokeWidth="1"
+            />
+          ))}
+          {Array.from({ length: yTickCount }, (_, i) => {
+            const t = i / (yTickCount - 1);
+            return (
+              <text
+                key={i}
+                x={width - padR + 8}
+                y={22 + t * (plotH - 36)}
+                className="axis-label"
+              >
+                {formatPrice(max - t * range)}
+              </text>
+            );
+          })}
+          {levels.map((level) => {
+            const levelY = y(level.value);
+            return levelY >= 0 && levelY <= plotH ? (
+              <g key={`${level.color}-${level.label}-${level.value}`}>
+                <line
+                  x1={0}
+                  y1={levelY}
+                  x2={width - padR}
+                  y2={levelY}
+                  stroke={level.color}
+                  strokeWidth="1.35"
+                  strokeDasharray="5 4"
+                />
+                <text
+                  x={plotW - 8}
+                  y={Math.max(12, levelY - 5)}
+                  textAnchor="end"
+                  className="target-label"
+                  fill={level.color}
+                >
+                  {level.label}
+                </text>
+                <rect
+                  x={width - padR - 1}
+                  y={levelY - 10}
+                  width="80"
+                  height="20"
+                  rx="3"
+                  fill={level.color}
+                />
+                <text
+                  x={width - 20}
+                  y={levelY + 4}
+                  textAnchor="end"
+                  className="level-label"
+                >
+                  {formatPrice(level.value)}
+                </text>
+              </g>
+            ) : null;
+          })}
+          {view.map((c, i) => {
+            const cx = padL + i * slot + slot / 2 + panShift;
+            const green = c.close >= c.open;
+            const color = green ? '#089981' : '#f23645';
+            return (
+              <g key={start + i}>
+                <g clipPath={`url(#${priceClipId})`}>
+                  <line
+                    x1={cx}
+                    x2={cx}
+                    y1={y(c.high)}
+                    y2={y(c.low)}
+                    stroke={color}
+                    strokeWidth="1.2"
+                  />
+                  <rect
+                    x={cx - body / 2}
+                    y={Math.min(y(c.open), y(c.close))}
+                    width={body}
+                    height={Math.max(1.5, Math.abs(y(c.open) - y(c.close)))}
+                    fill={color}
+                    stroke={color}
+                    strokeWidth="1.2"
+                  />
+                </g>
+                <rect
+                  x={cx - body / 2}
+                  y={plotH + 10 + (1 - c.volume / 100) * 54}
+                  width={body}
+                  height={(c.volume / 100) * 54}
+                  fill={green ? '#8bd8ca' : '#ffadb4'}
+                  opacity=".82"
+                />
+              </g>
+            );
+          })}
+          {cross && cross.x < plotW && cross.y >= 0 && cross.y < plotH && (
+            <g className="crosshair">
+              <line x1={crossX} x2={crossX} y1={0} y2={timeAxisTop} />
+              <line x1={0} x2={plotW} y1={cross.y} y2={cross.y} />
+              <rect
+                className="crosshair-label-bg"
+                x={width - padR - 1}
+                y={Math.max(1, Math.min(plotH - 23, cross.y - 11))}
+                width="80"
+                height="22"
+                rx="3"
+              />
+              <text
+                className="crosshair-label"
+                x={width - 20}
+                y={Math.max(16, Math.min(plotH - 8, cross.y + 4))}
+                textAnchor="end"
+              >
+                {formatPrice(crossPrice)}
+              </text>
+              {crossCandle && (
+                <>
+                  <rect
+                    className="crosshair-label-bg"
+                    x={Math.max(2, Math.min(plotW - 68, crossX - 34))}
+                    y={timeAxisTop + 5}
+                    width="68"
+                    height="27"
+                    rx="3"
+                  />
+                  <text
+                    className="crosshair-label"
+                    x={Math.max(36, Math.min(plotW - 34, crossX))}
+                    y={timeAxisTop + 23}
+                    textAnchor="middle"
+                  >
+                    {crossCandle.time}
+                  </text>
+                </>
+              )}
+            </g>
+          )}
+          <line
+            x1={0}
+            x2={plotW + padL}
+            y1={timeAxisTop}
+            y2={timeAxisTop}
+            stroke="#e2e5e8"
+            strokeWidth="1"
+          />
+          {Array.from({ length: xTickCount }, (_, i) => {
+            const t = i / (xTickCount - 1);
+            const ix = Math.floor(t * visibleCount - panShift / slot);
+            const label = ix >= 0 && ix < view.length ? view[ix].time : '';
+            return (
+              <text
+                key={i}
+                x={padL + t * plotW}
+                y={height - 15}
+                textAnchor={
+                  i === 0 ? 'start' : i === xTickCount - 1 ? 'end' : 'middle'
+                }
+                className="axis-label"
+              >
+                {label}
+              </text>
+            );
+          })}
+        </svg>
+      </div>
+      <div className="chart-foot">
+        <span>
+          <Activity /> Levels active · Formula preview
+        </span>
+        <span>Scroll to zoom · Drag to pan</span>
+      </div>
+    </section>
+  );
 }
 
 export default function Home() {
-  const [asset, setAsset] = useState<AssetKey>('NIFTY'); const [side, setSide] = useState<Side>('CE'); const [selectedStrike, setSelectedStrike] = useState(25100); const [expiry, setExpiry] = useState('17 Sep'); const [chainView, setChainView] = useState<'ALL' | 'CALLS' | 'PUTS'>('ALL'); const [showLevels, setShowLevels] = useState(true); const [timeframe, setTimeframe] = useState<Timeframe>('5m'); const [chainPercent, setChainPercent] = useState(28); const [chartSplit, setChartSplit] = useState(50); const meta = ASSETS[asset]; const atm = Math.round(meta.spot / meta.step) * meta.step;
-  const strikes = useMemo(() => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * meta.step), [atm, meta.step]); const underlying = useMemo(() => makeCandles(meta.spot, meta.spot, false, timeframe), [meta, timeframe]); const distance = Math.abs(selectedStrike - atm) / meta.step; const optionBase = Math.max(22, 176 - distance * 21 + (side === 'CE' ? (atm - selectedStrike) / meta.step * 12 : (selectedStrike - atm) / meta.step * 12)); const optionCandles = useMemo(() => makeCandles(optionBase, selectedStrike + (side === 'CE' ? 7 : 19), true, timeframe), [optionBase, selectedStrike, side, timeframe]); const underlyingLevels = makeWeeklyLevels(meta.weeklyOpen); const optionOpen = optionCandles[0].open; const optionLevels = makeOptionLevels(optionOpen);
-  const chooseAsset = (value: AssetKey) => { setAsset(value); const next = ASSETS[value]; setSelectedStrike(Math.round(next.spot / next.step) * next.step); };
-  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-glyph">M</span><div><strong>MANJU</strong><small>LEVELS</small></div></div><div className="asset-picker"><span className="eyebrow">UNDERLYING</span><label><select value={asset} onChange={e => chooseAsset(e.target.value as AssetKey)}>{(Object.keys(ASSETS) as AssetKey[]).map(k => <option key={k} value={k}>{ASSETS[k].short}</option>)}</select><ChevronDown /></label></div><label className="timeframe-picker"><span>TIMEFRAME</span><select value={timeframe} onChange={e => setTimeframe(e.target.value as Timeframe)}>{TIMEFRAMES.map(value => <option key={value}>{value}</option>)}</select><ChevronDown /></label><div className="market-quote"><strong>{formatPrice(meta.spot)}</strong><span className={meta.change >= 0 ? 'positive' : 'negative'}>{meta.change >= 0 ? '+' : ''}{meta.change.toFixed(2)}%</span><span className="live"><i /> MARKET LIVE</span></div><div className="header-actions"><button className={`levels-toggle ${showLevels ? 'on' : ''}`} role="switch" aria-checked={showLevels} onClick={() => setShowLevels(value => !value)}><span />Levels</button><span className="data-source">Dhan data ready</span><button aria-label="Settings"><Settings2 /></button><div className="avatar">RG</div></div></header>
-    <div className="workspace" style={{ gridTemplateColumns: `${100 - chainPercent}fr 6px ${chainPercent}fr` }}><div className="charts-grid" style={{ gridTemplateColumns: `${chartSplit}fr 6px ${100 - chartSplit}fr` }}><Chart title={meta.name} subtitle={`${timeframe} · NSE · Weekly open ${formatPrice(meta.weeklyOpen)}`} candles={underlying} levels={showLevels ? underlyingLevels : []} /><ResizeHandle onDrag={delta => setChartSplit(value => Math.min(78, Math.max(22, value + delta / Math.max(window.innerWidth * (100 - chainPercent) / 100, 1) * 100)))} /><Chart title={`${meta.short} ${expiry} ${selectedStrike.toLocaleString('en-IN')} ${side}`} subtitle={`${timeframe} · NSE F&O`} candles={optionCandles} levels={showLevels ? optionLevels : []} accent /></div><ResizeHandle onDrag={delta => setChainPercent(value => Math.min(45, Math.max(20, value - delta / Math.max(window.innerWidth, 1) * 100)))} /><aside className="chain-panel"><div className="chain-head"><div><span className="eyebrow">DERIVATIVES</span><h2>Option chain</h2></div><button aria-label="Refresh chain"><RefreshCw /></button></div><div className="chain-controls"><label><span>Expiry</span><select value={expiry} onChange={e => setExpiry(e.target.value)}><option>17 Sep</option><option>24 Sep</option><option>29 Oct</option></select></label><div className="segmented">{(['ALL','CALLS','PUTS'] as const).map(v => <button key={v} className={chainView === v ? 'active' : ''} onClick={() => setChainView(v)}>{v}</button>)}</div></div><div className="chain-summary"><span><b>{formatPrice(meta.spot)}</b> Spot</span><span><b>{atm.toLocaleString('en-IN')}</b> ATM</span><span><b>1.08</b> PCR</span></div><div className={`chain-table view-${chainView.toLowerCase()}`}><div className="chain-row chain-labels"><span>CALL OI</span><span>CALL LTP</span><span>STRIKE</span><span>PUT LTP</span><span>PUT OI</span></div><div className="chain-scroll">{strikes.map((strike, i) => { const d = (strike - atm) / meta.step; const ce = Math.max(7.5, 122 - d * 29 + i * 1.4); const pe = Math.max(7.5, 122 + d * 29 - i * .7); const isAtm = strike === atm; return <div className={`chain-row ${isAtm ? 'atm' : ''}`} key={strike}><span className="oi">{(36 + Math.abs(d) * 17 + i * 2).toFixed(1)}K</span><button className={selectedStrike === strike && side === 'CE' ? 'selected' : ''} onClick={() => { setSelectedStrike(strike); setSide('CE'); }}>{formatPrice(ce)}<small className={i % 3 ? 'positive' : 'negative'}>{i % 3 ? '+' : '-'}{(2.3 + i * .7).toFixed(1)}%</small></button><button className="strike" onClick={() => setSelectedStrike(strike)}>{strike.toLocaleString('en-IN')}{isAtm && <small>ATM</small>}</button><button className={selectedStrike === strike && side === 'PE' ? 'selected' : ''} onClick={() => { setSelectedStrike(strike); setSide('PE'); }}>{formatPrice(pe)}<small className={i % 2 ? 'negative' : 'positive'}>{i % 2 ? '-' : '+'}{(1.7 + i * .55).toFixed(1)}%</small></button><span className="oi">{(41 + Math.abs(d) * 14 + (12 - i) * 2).toFixed(1)}K</span></div>; })}</div></div><div className="chain-foot"><div><span>Max pain</span><b>{atm.toLocaleString('en-IN')}</b></div><div><span>ATM IV</span><b>12.84%</b></div><div><span>Updated</span><b>Just now</b></div></div></aside></div>
-    <footer className="statusbar"><div><span className="status-dot" /> Live workspace</div><div><Crosshair /> Crosshair <span className="divider" /><Layers3 /> Formula levels <span className="divider" /><BarChart3 /> {timeframe}</div></footer></main>;
+  const [asset, setAsset] = useState<AssetKey>('NIFTY');
+  const [side, setSide] = useState<Side>('CE');
+  const [selectedStrike, setSelectedStrike] = useState(25100);
+  const [expiry, setExpiry] = useState('');
+  const [chainView, setChainView] = useState<'ALL' | 'CALLS' | 'PUTS'>('ALL');
+  const [showLevels, setShowLevels] = useState(true);
+  const [timeframe, setTimeframe] = useState<Timeframe>('5m');
+  const [chainPercent, setChainPercent] = useState(28);
+  const [chartSplit, setChartSplit] = useState(50);
+  const [live, setLive] = useState<LiveSnapshot | null>(null);
+  const [feedError, setFeedError] = useState('Connecting to Dhan');
+  const meta = ASSETS[asset];
+  const currentSpot = live?.spot || meta.spot;
+  const atm = Math.round(currentSpot / meta.step) * meta.step;
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      try {
+        const query = new URLSearchParams({
+          asset,
+          timeframe,
+          side,
+          strike: String(selectedStrike),
+        });
+        if (expiry) query.set('expiry', expiry);
+        const response = await fetch(`/api/dhan/snapshot?${query}`, {
+          cache: 'no-store',
+        });
+        const data = await response.json();
+        if (!response.ok)
+          throw new Error(data.error || 'Dhan feed unavailable');
+        if (!active) return;
+        setLive(data);
+        setFeedError('');
+        if (data.expiry && data.expiry !== expiry) setExpiry(data.expiry);
+      } catch (error) {
+        if (active) {
+          setLive(null);
+          setFeedError(
+            error instanceof Error ? error.message : 'Dhan feed unavailable',
+          );
+        }
+      } finally {
+        if (active) timer = setTimeout(load, 4000);
+      }
+    };
+    load();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [asset, timeframe, side, selectedStrike, expiry]);
+  const mockStrikes = useMemo(
+    () => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * meta.step),
+    [atm, meta.step],
+  );
+  const mockUnderlying = useMemo(
+    () => makeCandles(meta.spot, meta.spot, false, timeframe),
+    [meta, timeframe],
+  );
+  const distance = Math.abs(selectedStrike - atm) / meta.step;
+  const optionBase = Math.max(
+    22,
+    176 -
+      distance * 21 +
+      (side === 'CE'
+        ? ((atm - selectedStrike) / meta.step) * 12
+        : ((selectedStrike - atm) / meta.step) * 12),
+  );
+  const mockOptionCandles = useMemo(
+    () =>
+      makeCandles(
+        optionBase,
+        selectedStrike + (side === 'CE' ? 7 : 19),
+        true,
+        timeframe,
+      ),
+    [optionBase, selectedStrike, side, timeframe],
+  );
+  const underlying = live?.underlyingCandles?.length
+    ? live.underlyingCandles
+    : mockUnderlying;
+  const optionCandles = live?.optionCandles?.length
+    ? live.optionCandles
+    : mockOptionCandles;
+  const weeklyOpen = live?.weeklyOpen || meta.weeklyOpen;
+  const underlyingLevels = makeWeeklyLevels(weeklyOpen);
+  const optionOpen = optionCandles[0].open;
+  const optionLevels = makeOptionLevels(optionOpen);
+  const chainRows = live?.chain?.length
+    ? live.chain.filter((row) => Math.abs(row.strike - atm) <= meta.step * 6)
+    : mockStrikes.map((strike) => ({ strike, ce: null, pe: null }));
+  const chooseAsset = (value: AssetKey) => {
+    setAsset(value);
+    const next = ASSETS[value];
+    setSelectedStrike(Math.round(next.spot / next.step) * next.step);
+  };
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-glyph">M</span>
+          <div>
+            <strong>MANJU</strong>
+            <small>LEVELS</small>
+          </div>
+        </div>
+        <div className="asset-picker">
+          <span className="eyebrow">UNDERLYING</span>
+          <label>
+            <select
+              value={asset}
+              onChange={(e) => chooseAsset(e.target.value as AssetKey)}
+            >
+              {(Object.keys(ASSETS) as AssetKey[]).map((k) => (
+                <option key={k} value={k}>
+                  {ASSETS[k].short}
+                </option>
+              ))}
+            </select>
+            <ChevronDown />
+          </label>
+        </div>
+        <label className="timeframe-picker">
+          <span>TIMEFRAME</span>
+          <select
+            value={timeframe}
+            onChange={(e) => setTimeframe(e.target.value as Timeframe)}
+          >
+            {TIMEFRAMES.map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+          <ChevronDown />
+        </label>
+        <div className="market-quote">
+          <strong>{formatPrice(currentSpot)}</strong>
+          <span className={meta.change >= 0 ? 'positive' : 'negative'}>
+            {meta.change >= 0 ? '+' : ''}
+            {meta.change.toFixed(2)}%
+          </span>
+          <span className={`live ${live ? '' : 'offline'}`}>
+            <i /> {live ? 'MARKET LIVE' : 'DEMO DATA'}
+          </span>
+        </div>
+        <div className="header-actions">
+          <button
+            className={`levels-toggle ${showLevels ? 'on' : ''}`}
+            role="switch"
+            aria-checked={showLevels}
+            onClick={() => setShowLevels((value) => !value)}
+          >
+            <span />
+            Levels
+          </button>
+          <span
+            className={`data-source ${live ? 'connected' : 'disconnected'}`}
+            title={feedError}
+          >
+            {live ? 'Dhan connected' : 'Dhan setup required'}
+          </span>
+          <button aria-label="Settings">
+            <Settings2 />
+          </button>
+          <div className="avatar">RG</div>
+        </div>
+      </header>
+      <div
+        className="workspace"
+        style={{
+          gridTemplateColumns: `${100 - chainPercent}fr 6px ${chainPercent}fr`,
+        }}
+      >
+        <div
+          className="charts-grid"
+          style={{
+            gridTemplateColumns: `${chartSplit}fr 6px ${100 - chartSplit}fr`,
+          }}
+        >
+          <Chart
+            title={meta.name}
+            subtitle={`${timeframe} · NSE · Weekly open ${formatPrice(weeklyOpen)}`}
+            candles={underlying}
+            levels={showLevels ? underlyingLevels : []}
+          />
+          <ResizeHandle
+            onDrag={(delta) =>
+              setChartSplit((value) =>
+                Math.min(
+                  78,
+                  Math.max(
+                    22,
+                    value +
+                      (delta /
+                        Math.max(
+                          (window.innerWidth * (100 - chainPercent)) / 100,
+                          1,
+                        )) *
+                        100,
+                  ),
+                ),
+              )
+            }
+          />
+          <Chart
+            title={`${meta.short} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
+            subtitle={`${timeframe} · NSE F&O`}
+            candles={optionCandles}
+            levels={showLevels ? optionLevels : []}
+            accent
+          />
+        </div>
+        <ResizeHandle
+          onDrag={(delta) =>
+            setChainPercent((value) =>
+              Math.min(
+                45,
+                Math.max(
+                  20,
+                  value - (delta / Math.max(window.innerWidth, 1)) * 100,
+                ),
+              ),
+            )
+          }
+        />
+        <aside className="chain-panel">
+          <div className="chain-head">
+            <div>
+              <span className="eyebrow">DERIVATIVES</span>
+              <h2>Option chain</h2>
+            </div>
+            <button aria-label="Refresh chain">
+              <RefreshCw />
+            </button>
+          </div>
+          <div className="chain-controls">
+            <label>
+              <span>Expiry</span>
+              <select
+                value={expiry}
+                onChange={(e) => setExpiry(e.target.value)}
+              >
+                {!live?.expiries?.length && <option value="">Loading</option>}
+                {live?.expiries?.map((value) => (
+                  <option key={value} value={value}>{formatExpiry(value)}</option>
+                ))}
+              </select>
+            </label>
+            <div className="segmented">
+              {(['ALL', 'CALLS', 'PUTS'] as const).map((v) => (
+                <button
+                  key={v}
+                  className={chainView === v ? 'active' : ''}
+                  onClick={() => setChainView(v)}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="chain-summary">
+            <span>
+              <b>{formatPrice(currentSpot)}</b> Spot
+            </span>
+            <span>
+              <b>{atm.toLocaleString('en-IN')}</b> ATM
+            </span>
+            <span>
+              <b>1.08</b> PCR
+            </span>
+          </div>
+          <div className={`chain-table view-${chainView.toLowerCase()}`}>
+            <div className="chain-row chain-labels">
+              <span>CALL OI</span>
+              <span>CALL LTP</span>
+              <span>STRIKE</span>
+              <span>PUT LTP</span>
+              <span>PUT OI</span>
+            </div>
+            <div className="chain-scroll">
+              {chainRows.map((row, i) => {
+                const strike = row.strike;
+                const d = (strike - atm) / meta.step;
+                const ce = row.ce?.ltp ?? Math.max(7.5, 122 - d * 29 + i * 1.4);
+                const pe = row.pe?.ltp ?? Math.max(7.5, 122 + d * 29 - i * 0.7);
+                const ceChange = row.ce?.previousClose ? ((ce - row.ce.previousClose) / row.ce.previousClose) * 100 : 0;
+                const peChange = row.pe?.previousClose ? ((pe - row.pe.previousClose) / row.pe.previousClose) * 100 : 0;
+                const isAtm = strike === atm;
+                return (
+                  <div
+                    className={`chain-row ${isAtm ? 'atm' : ''}`}
+                    key={strike}
+                  >
+                    <span className="oi">
+                      {row.ce ? `${(row.ce.oi / 1000).toFixed(1)}K` : '—'}
+                    </span>
+                    <button
+                      className={
+                        selectedStrike === strike && side === 'CE'
+                          ? 'selected'
+                          : ''
+                      }
+                      onClick={() => {
+                        setSelectedStrike(strike);
+                        setSide('CE');
+                      }}
+                    >
+                      {formatPrice(ce)}
+                      <small className={ceChange >= 0 ? 'positive' : 'negative'}>
+                        {ceChange >= 0 ? '+' : ''}{ceChange.toFixed(1)}%
+                      </small>
+                    </button>
+                    <button
+                      className="strike"
+                      onClick={() => setSelectedStrike(strike)}
+                    >
+                      {strike.toLocaleString('en-IN')}
+                      {isAtm && <small>ATM</small>}
+                    </button>
+                    <button
+                      className={
+                        selectedStrike === strike && side === 'PE'
+                          ? 'selected'
+                          : ''
+                      }
+                      onClick={() => {
+                        setSelectedStrike(strike);
+                        setSide('PE');
+                      }}
+                    >
+                      {formatPrice(pe)}
+                      <small className={peChange >= 0 ? 'positive' : 'negative'}>
+                        {peChange >= 0 ? '+' : ''}{peChange.toFixed(1)}%
+                      </small>
+                    </button>
+                    <span className="oi">
+                      {row.pe ? `${(row.pe.oi / 1000).toFixed(1)}K` : '—'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="chain-foot">
+            <div>
+              <span>Max pain</span>
+              <b>{atm.toLocaleString('en-IN')}</b>
+            </div>
+            <div>
+              <span>ATM IV</span>
+              <b>12.84%</b>
+            </div>
+            <div>
+              <span>Updated</span>
+              <b>{live ? new Date(live.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Demo'}</b>
+            </div>
+          </div>
+        </aside>
+      </div>
+      <footer className="statusbar">
+        <div>
+          <span className="status-dot" /> Live workspace
+        </div>
+        <div>
+          <Crosshair /> Crosshair <span className="divider" />
+          <Layers3 /> Formula levels <span className="divider" />
+          <BarChart3 /> {timeframe}
+        </div>
+      </footer>
+    </main>
+  );
 }
