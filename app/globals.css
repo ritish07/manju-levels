@@ -6,6 +6,7 @@
 /* Palette sampled from the supplied trading workspace reference. */
 :root{--green:#089981;--red:#f23645;--blue:#2962ff;--mint:#e9f8f1;--warm:#f3a62f}
 html,body{background:#f7f8f8}
+html{color-scheme:light!important}
 .topbar{border-top:2px solid #2c3033}
 .brand-glyph{background:linear-gradient(145deg,#089981,#0bb88f)}
 .live i{background:#0aa174;box-shadow:0 0 0 4px #dff7eb}
@@ -18,6 +19,6 @@ html,body{background:#f7f8f8}
 .chain-row .strike small{background:#fff;color:#2176d2;border:1px solid #8cc0f0}
 .chain-row.atm,.chain-row.atm .strike{background:#f5f7f8}
 .statusbar{background:#26292c;color:#c8cbcc}
-.chart-panel,.chart-stage,.chart-stage svg{background:#fff}
+.app-shell,.workspace,.charts-grid,.chart-panel,.chart-head,.chart-stage,.chart-stage svg{background-color:#fff!important;color-scheme:light}
 .axis-label{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:12px;font-weight:400;letter-spacing:0;fill:#3f4247;font-variant-numeric:tabular-nums lining-nums}
 .level-label{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:11px;font-weight:500;font-variant-numeric:tabular-nums}
