@@ -24,3 +24,25 @@ html{color-scheme:light!important}
 .chart-stage svg{isolation:isolate;filter:none!important}
 .axis-label{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:14px;font-weight:400;letter-spacing:.05px;fill:#242629;font-variant-numeric:tabular-nums lining-nums;font-feature-settings:"tnum" 1}
 .level-label{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:11px;font-weight:500;font-variant-numeric:tabular-nums}
+
+/* Unified density and typography system */
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:12px;line-height:1.35}
+.app-shell{grid-template-rows:64px minmax(0,1fr) 30px}
+.topbar{padding:0 20px;gap:24px}
+.brand{width:152px;gap:10px}.brand-glyph{width:32px;height:32px}.brand strong{font-size:13px}.brand small{font-size:8px;margin-top:3px}
+.eyebrow{font-size:9px;line-height:1;letter-spacing:.12em;margin-bottom:6px}
+.asset-picker{gap:12px}.asset-picker label{height:36px;min-width:166px}.asset-picker select{font-size:12px;padding-left:12px}
+.market-quote{gap:10px;padding-left:22px}.market-quote strong{font-size:17px}.market-quote>span:not(.live){font-size:12px}.live{font-size:9px}
+.header-actions{gap:12px}.data-source{font-size:10px;padding:6px 10px}.header-actions button,.chain-head button{width:34px;height:34px}.avatar{width:32px;height:32px}
+.workspace{grid-template-columns:minmax(0,1fr) 420px}
+.chart-panel{grid-template-rows:70px minmax(0,1fr) 30px}
+.chart-head{padding:11px 14px}.chart-title{font-size:14px;line-height:1.2;gap:8px}.symbol-mark{width:24px;height:24px}.chart-sub{font-size:10px;margin-top:5px}.chart-tools{gap:2px}.chart-tools button{width:30px;height:30px}.chart-tools svg{width:15px}
+.chart-stage{padding:0}.axis-label{font-size:13px;fill:#36383b}.level-label{font-size:11px;font-weight:500}.chart-foot{padding:0 14px;font-size:9px}
+.chain-panel{grid-template-rows:70px 82px 46px minmax(0,1fr) 54px}
+.chain-head{padding:0 16px}.chain-head h2{font-family:inherit;font-size:17px;font-weight:650;letter-spacing:-.01em}
+.chain-controls{padding:10px 14px;gap:10px}.chain-controls label span{font-size:9px;margin-bottom:5px}.chain-controls select,.segmented{height:32px}.chain-controls select{font-size:11px;padding:0 10px}.segmented button{font-size:9px;padding:0 10px}
+.chain-summary span{font-size:9px;gap:5px}.chain-summary b{font-size:11px}
+.chain-table{grid-template-rows:34px minmax(0,1fr)}.chain-labels{font-size:8px;letter-spacing:.07em}.chain-scroll .chain-row{min-height:54px}.chain-row button{font-size:11px;gap:3px}.chain-row small{font-size:8px}.oi{font-size:9px}.chain-row .strike{font-size:11px}
+.chain-foot span{font-size:8px}.chain-foot b{font-size:10px;margin-top:3px}
+.statusbar{height:30px;padding:0 16px;font-size:9px}.statusbar>div{gap:8px}
+@media(max-width:1450px){.workspace{grid-template-columns:minmax(0,1fr) 390px}.chain-row{grid-template-columns:48px 78px 88px 78px 48px}.topbar{gap:18px}.brand{width:130px}.asset-picker label{min-width:150px}}
