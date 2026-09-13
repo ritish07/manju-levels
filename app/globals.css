@@ -22,5 +22,5 @@ html{color-scheme:light!important}
 .app-shell,.workspace,.charts-grid,.chart-panel,.chart-head,.chart-stage,.chart-stage svg{background:#fff!important;background-color:#fff!important;color-scheme:only light;forced-color-adjust:none}
 .chart-stage{isolation:isolate}
 .chart-stage svg{isolation:isolate;filter:none!important}
-.axis-label{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:12px;font-weight:400;letter-spacing:0;fill:#3f4247;font-variant-numeric:tabular-nums lining-nums}
+.axis-label{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:14px;font-weight:400;letter-spacing:.05px;fill:#242629;font-variant-numeric:tabular-nums lining-nums;font-feature-settings:"tnum" 1}
 .level-label{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:11px;font-weight:500;font-variant-numeric:tabular-nums}
