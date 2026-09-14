@@ -43,6 +43,13 @@ type LiveSnapshot = {
   chain: { strike: number; ce: ChainLeg; pe: ChainLeg }[];
   updatedAt: string;
 };
+type NseInstrument = {
+  securityId: number;
+  symbol: string;
+  name: string;
+  segment: 'NSE_EQ';
+  instrument: 'EQUITY';
+};
 const TIMEFRAMES: Timeframe[] = [
   '1m',
   '3m',
@@ -228,6 +235,20 @@ function ResizeHandle({ onDrag }: { onDrag: (deltaX: number) => void }) {
     >
       <span />
     </div>
+  );
+}
+
+function EmptyPane() {
+  return (
+    <section className="empty-panel">
+      <div>
+        <strong>Index options unavailable for stocks</strong>
+        <span>
+          Select Nifty, Bank Nifty, or Sensex to view its option chart and
+          chain.
+        </span>
+      </div>
+    </section>
   );
 }
 
@@ -676,9 +697,20 @@ export default function Home() {
   const [chartSplit, setChartSplit] = useState(50);
   const [live, setLive] = useState<LiveSnapshot | null>(null);
   const [feedError, setFeedError] = useState('Connecting to Dhan');
+  const [instruments, setInstruments] = useState<NseInstrument[]>([]);
+  const [selectedStock, setSelectedStock] = useState<NseInstrument | null>(
+    null,
+  );
+  const [instrumentQuery, setInstrumentQuery] = useState('NIFTY');
   const meta = ASSETS[asset];
-  const currentSpot = live?.spot || meta.spot;
+  const currentSpot = live?.spot || (selectedStock ? 0 : meta.spot);
   const atm = Math.round(currentSpot / meta.step) * meta.step;
+  useEffect(() => {
+    fetch('/api/dhan/instruments')
+      .then((response) => response.json())
+      .then((data) => setInstruments(data.instruments || []))
+      .catch(() => setInstruments([]));
+  }, []);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -690,6 +722,10 @@ export default function Home() {
           side,
           strike: String(selectedStrike),
         });
+        if (selectedStock) {
+          query.set('securityId', String(selectedStock.securityId));
+          query.set('symbol', selectedStock.symbol);
+        }
         if (expiry) query.set('expiry', expiry);
         const response = await fetch(`/api/dhan/snapshot?${query}`, {
           cache: 'no-store',
@@ -717,7 +753,7 @@ export default function Home() {
       active = false;
       clearTimeout(timer);
     };
-  }, [asset, timeframe, side, selectedStrike, expiry]);
+  }, [asset, timeframe, side, selectedStrike, expiry, selectedStock]);
   const mockStrikes = useMemo(
     () => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * meta.step),
     [atm, meta.step],
@@ -752,16 +788,35 @@ export default function Home() {
     ? live.optionCandles
     : mockOptionCandles;
   const weeklyOpen = live?.weeklyOpen || meta.weeklyOpen;
-  const underlyingLevels = makeWeeklyLevels(weeklyOpen);
+  const underlyingLevels = selectedStock ? [] : makeWeeklyLevels(weeklyOpen);
   const optionOpen = optionCandles[0].open;
   const optionLevels = makeOptionLevels(optionOpen);
   const chainRows = live?.chain?.length
     ? live.chain.filter((row) => Math.abs(row.strike - atm) <= meta.step * 6)
     : mockStrikes.map((strike) => ({ strike, ce: null, pe: null }));
   const chooseAsset = (value: AssetKey) => {
+    setSelectedStock(null);
+    setInstrumentQuery(value);
     setAsset(value);
     const next = ASSETS[value];
     setSelectedStrike(Math.round(next.spot / next.step) * next.step);
+  };
+  const chooseInstrument = (value: string) => {
+    setInstrumentQuery(value);
+    if ((Object.keys(ASSETS) as AssetKey[]).includes(value as AssetKey)) {
+      chooseAsset(value as AssetKey);
+      return;
+    }
+    const stock = instruments.find(
+      (item) =>
+        `${item.symbol} — ${item.name}` === value || item.symbol === value,
+    );
+    if (stock) {
+      setSelectedStock(stock);
+      setInstrumentQuery(`${stock.symbol} — ${stock.name}`);
+      setLive(null);
+      setExpiry('');
+    }
   };
   return (
     <main className="app-shell">
@@ -776,17 +831,27 @@ export default function Home() {
         <div className="asset-picker">
           <span className="eyebrow">UNDERLYING</span>
           <label>
-            <select
-              value={asset}
-              onChange={(e) => chooseAsset(e.target.value as AssetKey)}
-            >
-              {(Object.keys(ASSETS) as AssetKey[]).map((k) => (
-                <option key={k} value={k}>
-                  {ASSETS[k].short}
+            <input
+              list="nse-instruments"
+              value={instrumentQuery}
+              onChange={(e) => chooseInstrument(e.target.value)}
+              onFocus={(e) => e.currentTarget.select()}
+              placeholder="Search NSE symbol or company"
+              aria-label="Search NSE index or stock"
+            />
+            <datalist id="nse-instruments">
+              {(Object.keys(ASSETS) as AssetKey[]).map((key) => (
+                <option key={key} value={key}>
+                  {ASSETS[key].name}
                 </option>
               ))}
-            </select>
-            <ChevronDown />
+              {instruments.map((item) => (
+                <option
+                  key={item.securityId}
+                  value={`${item.symbol} — ${item.name}`}
+                />
+              ))}
+            </datalist>
           </label>
         </div>
         <label className="timeframe-picker">
@@ -846,8 +911,12 @@ export default function Home() {
           }}
         >
           <Chart
-            title={meta.name}
-            subtitle={`${timeframe} · NSE · Weekly open ${formatPrice(weeklyOpen)}`}
+            title={
+              selectedStock
+                ? `${selectedStock.symbol} · ${selectedStock.name}`
+                : meta.name
+            }
+            subtitle={`${timeframe} · ${selectedStock ? 'NSE' : 'NSE · Weekly open ' + formatPrice(weeklyOpen)}`}
             candles={underlying}
             levels={showLevels ? underlyingLevels : []}
           />
@@ -870,13 +939,17 @@ export default function Home() {
               )
             }
           />
-          <Chart
-            title={`${meta.short} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
-            subtitle={`${timeframe} · NSE F&O`}
-            candles={optionCandles}
-            levels={showLevels ? optionLevels : []}
-            accent
-          />
+          {selectedStock ? (
+            <EmptyPane />
+          ) : (
+            <Chart
+              title={`${meta.short} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
+              subtitle={`${timeframe} · NSE F&O`}
+              candles={optionCandles}
+              levels={showLevels ? optionLevels : []}
+              accent
+            />
+          )}
         </div>
         <ResizeHandle
           onDrag={(delta) =>
@@ -892,6 +965,12 @@ export default function Home() {
           }
         />
         <aside className="chain-panel">
+          {selectedStock && (
+            <div className="stock-chain-disabled">
+              <strong>No index option chain</strong>
+              <span>Choose an index to restore derivatives.</span>
+            </div>
+          )}
           <div className="chain-head">
             <div>
               <span className="eyebrow">DERIVATIVES</span>
@@ -910,7 +989,9 @@ export default function Home() {
               >
                 {!live?.expiries?.length && <option value="">Loading</option>}
                 {live?.expiries?.map((value) => (
-                  <option key={value} value={value}>{formatExpiry(value)}</option>
+                  <option key={value} value={value}>
+                    {formatExpiry(value)}
+                  </option>
                 ))}
               </select>
             </label>
@@ -951,8 +1032,12 @@ export default function Home() {
                 const d = (strike - atm) / meta.step;
                 const ce = row.ce?.ltp ?? Math.max(7.5, 122 - d * 29 + i * 1.4);
                 const pe = row.pe?.ltp ?? Math.max(7.5, 122 + d * 29 - i * 0.7);
-                const ceChange = row.ce?.previousClose ? ((ce - row.ce.previousClose) / row.ce.previousClose) * 100 : 0;
-                const peChange = row.pe?.previousClose ? ((pe - row.pe.previousClose) / row.pe.previousClose) * 100 : 0;
+                const ceChange = row.ce?.previousClose
+                  ? ((ce - row.ce.previousClose) / row.ce.previousClose) * 100
+                  : 0;
+                const peChange = row.pe?.previousClose
+                  ? ((pe - row.pe.previousClose) / row.pe.previousClose) * 100
+                  : 0;
                 const isAtm = strike === atm;
                 return (
                   <div
@@ -974,8 +1059,11 @@ export default function Home() {
                       }}
                     >
                       {formatPrice(ce)}
-                      <small className={ceChange >= 0 ? 'positive' : 'negative'}>
-                        {ceChange >= 0 ? '+' : ''}{ceChange.toFixed(1)}%
+                      <small
+                        className={ceChange >= 0 ? 'positive' : 'negative'}
+                      >
+                        {ceChange >= 0 ? '+' : ''}
+                        {ceChange.toFixed(1)}%
                       </small>
                     </button>
                     <button
@@ -997,8 +1085,11 @@ export default function Home() {
                       }}
                     >
                       {formatPrice(pe)}
-                      <small className={peChange >= 0 ? 'positive' : 'negative'}>
-                        {peChange >= 0 ? '+' : ''}{peChange.toFixed(1)}%
+                      <small
+                        className={peChange >= 0 ? 'positive' : 'negative'}
+                      >
+                        {peChange >= 0 ? '+' : ''}
+                        {peChange.toFixed(1)}%
                       </small>
                     </button>
                     <span className="oi">
@@ -1020,7 +1111,14 @@ export default function Home() {
             </div>
             <div>
               <span>Updated</span>
-              <b>{live ? new Date(live.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : 'Demo'}</b>
+              <b>
+                {live
+                  ? new Date(live.updatedAt).toLocaleTimeString('en-IN', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : 'Demo'}
+              </b>
             </div>
           </div>
         </aside>
