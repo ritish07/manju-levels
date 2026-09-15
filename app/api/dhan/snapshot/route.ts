@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const DHAN_API = 'https://api.dhan.co/v2';
+const DHAN_MASTER = 'https://images.dhan.co/api-data/api-scrip-master.csv';
+let futuresCache: { expires: number; rows: string[][]; index: Record<string, number> } | null = null;
 const ASSETS = {
   NIFTY: { securityId: 13, segment: 'IDX_I', instrument: 'INDEX' },
   BANKNIFTY: { securityId: 25, segment: 'IDX_I', instrument: 'INDEX' },
@@ -53,6 +55,80 @@ async function dhan(path: string, body: object) {
         `Dhan HTTP ${response.status}`,
     );
   return data;
+}
+
+function parseCsvLine(line: string) {
+  const fields: string[] = [];
+  let value = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (quoted && line[i + 1] === '"') {
+        value += '"';
+        i++;
+      } else quoted = !quoted;
+    } else if (char === ',' && !quoted) {
+      fields.push(value);
+      value = '';
+    } else value += char;
+  }
+  fields.push(value);
+  return fields;
+}
+
+async function nearestFuture(asset: Asset) {
+  if (!futuresCache || futuresCache.expires < Date.now()) {
+    const response = await fetch(DHAN_MASTER, {
+      cf: { cacheTtl: 21600 },
+    } as RequestInit);
+    if (!response.ok) throw new Error(`Instrument list HTTP ${response.status}`);
+    const lines = (await response.text()).split(/\r?\n/);
+    const headers = parseCsvLine(lines[0]);
+    futuresCache = {
+      expires: Date.now() + 21600000,
+      rows: lines.slice(1).map(parseCsvLine),
+      index: Object.fromEntries(headers.map((name, i) => [name, i])),
+    };
+  }
+  const { rows, index } = futuresCache;
+  const exchange = asset === 'SENSEX' ? 'BSE' : 'NSE';
+  const now = Date.now();
+  const candidates = rows
+    .filter((row) => {
+      const symbol = row[index.SEM_TRADING_SYMBOL] || '';
+      const expiry = Date.parse(row[index.SEM_EXPIRY_DATE] || '');
+      return row[index.SEM_EXM_EXCH_ID] === exchange &&
+        row[index.SEM_SEGMENT] === 'D' &&
+        row[index.SEM_INSTRUMENT_NAME] === 'FUTIDX' &&
+        symbol.startsWith(`${asset}-`) && expiry >= now;
+    })
+    .sort((a, b) => Date.parse(a[index.SEM_EXPIRY_DATE]) - Date.parse(b[index.SEM_EXPIRY_DATE]));
+  const row = candidates[0];
+  if (!row) return null;
+  return {
+    securityId: Number(row[index.SEM_SMST_SECURITY_ID]),
+    symbol: row[index.SEM_CUSTOM_SYMBOL] || row[index.SEM_TRADING_SYMBOL],
+    expiry: row[index.SEM_EXPIRY_DATE],
+    segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO',
+  };
+}
+
+async function indexFutureQuote(asset: Asset) {
+  try {
+    const future = await nearestFuture(asset);
+    if (!future) return null;
+    const response = await dhan('/marketfeed/ltp', {
+      [future.segment]: [future.securityId],
+    });
+    return {
+      symbol: future.symbol,
+      expiry: future.expiry,
+      price: Number(response.data?.[future.segment]?.[String(future.securityId)]?.last_price || 0),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function istDate(date: Date) {
@@ -293,7 +369,7 @@ export async function GET(request: NextRequest) {
       chain[0],
     );
     const contract = selected?.[side];
-    const [underlyingCandles, optionCandles] = await Promise.all([
+    const [underlyingCandles, optionCandles, future] = await Promise.all([
       history(spec, timeframe),
       contract
         ? history(
@@ -305,6 +381,7 @@ export async function GET(request: NextRequest) {
             timeframe,
           )
         : Promise.resolve([]),
+      indexFutureQuote(asset),
     ]);
     const weeklyOpen = findWeeklyOpen(underlyingCandles, spot);
     return NextResponse.json(
@@ -315,6 +392,9 @@ export async function GET(request: NextRequest) {
         expiry,
         expiries,
         weeklyOpen,
+        futurePrice: future?.price || 0,
+        futureSymbol: future?.symbol || '',
+        futureExpiry: future?.expiry || '',
         chain,
         selectedStrike: selected?.strike,
         side: side.toUpperCase(),

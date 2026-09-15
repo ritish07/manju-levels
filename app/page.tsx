@@ -40,6 +40,9 @@ type LiveSnapshot = {
   expiry: string;
   expiries: string[];
   weeklyOpen: number;
+  futurePrice?: number;
+  futureSymbol?: string;
+  futureExpiry?: string;
   selectedStrike: number;
   underlyingCandles: Candle[];
   optionCandles: Candle[];
@@ -954,6 +957,12 @@ export default function Home() {
             {meta.change >= 0 ? '+' : ''}
             {meta.change.toFixed(2)}%
           </span>
+          {!selectedStock && (
+            <span className={`future-quote ${live?.futurePrice ? '' : 'unavailable'}`} title={live?.futureSymbol || 'Available when Dhan is connected'}>
+              <small>{meta.short} FUT</small>
+              <b>{live?.futurePrice ? formatPrice(live.futurePrice) : '—'}</b>
+            </span>
+          )}
           <span className={`live ${live ? '' : 'offline'}`}>
             <i /> {live ? 'MARKET LIVE' : 'DEMO DATA'}
           </span>
