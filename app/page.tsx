@@ -28,6 +28,7 @@ type ChartLevel = { value: number; label: string; color: string };
 type ChainLeg = {
   ltp: number;
   oi: number;
+  previousOi: number;
   previousClose: number;
   securityId: number;
 } | null;
@@ -159,6 +160,11 @@ function formatPrice(n: number) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+function formatOi(n: number) {
+  if (Math.abs(n) >= 1000000) return `${(n / 1000000).toFixed(2)} M`;
+  if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(2)} K`;
+  return Math.round(n).toLocaleString('en-IN');
 }
 function formatExpiry(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value || 'Loading';
@@ -794,6 +800,18 @@ export default function Home() {
   const chainRows = live?.chain?.length
     ? live.chain.filter((row) => Math.abs(row.strike - atm) <= meta.step * 6)
     : mockStrikes.map((strike) => ({ strike, ce: null, pe: null }));
+  const oiSeries = chainRows.map((row, i) => ({
+    ce: row.ce?.oi ?? Math.round(42000 + Math.abs(i - 6) * 14500 + i * 1900),
+    pe: row.pe?.oi ?? Math.round(51000 + Math.abs(i - 6) * 12800 + (12 - i) * 2300),
+    cePrevious:
+      row.ce?.previousOi ?? Math.round(27000 + Math.abs(i - 6) * 9200),
+    pePrevious:
+      row.pe?.previousOi ?? Math.round(31000 + Math.abs(i - 6) * 8100),
+  }));
+  const maxVisibleOi = Math.max(
+    1,
+    ...oiSeries.flatMap((row) => [row.ce, row.pe]),
+  );
   const chooseAsset = (value: AssetKey) => {
     setSelectedStock(null);
     setInstrumentQuery(value);
@@ -1025,6 +1043,7 @@ export default function Home() {
               <span>STRIKE</span>
               <span>PUT LTP</span>
               <span>PUT OI</span>
+              <span>OI PROFILE</span>
             </div>
             <div className="chain-scroll">
               {chainRows.map((row, i) => {
@@ -1038,6 +1057,9 @@ export default function Home() {
                 const peChange = row.pe?.previousClose
                   ? ((pe - row.pe.previousClose) / row.pe.previousClose) * 100
                   : 0;
+                const oi = oiSeries[i];
+                const ceOiChange = oi.ce - oi.cePrevious;
+                const peOiChange = oi.pe - oi.pePrevious;
                 const isAtm = strike === atm;
                 return (
                   <div
@@ -1045,7 +1067,7 @@ export default function Home() {
                     key={strike}
                   >
                     <span className="oi">
-                      {row.ce ? `${(row.ce.oi / 1000).toFixed(1)}K` : '—'}
+                      {formatOi(oi.ce)}
                     </span>
                     <button
                       className={
@@ -1093,8 +1115,30 @@ export default function Home() {
                       </small>
                     </button>
                     <span className="oi">
-                      {row.pe ? `${(row.pe.oi / 1000).toFixed(1)}K` : '—'}
+                      {formatOi(oi.pe)}
                     </span>
+                    <button
+                      type="button"
+                      className="oi-profile"
+                      aria-label={`Open interest details for ${strike.toLocaleString('en-IN')}`}
+                    >
+                      <span
+                        className="oi-bar call"
+                        style={{ width: `${Math.max(5, (oi.ce / maxVisibleOi) * 100)}%` }}
+                      />
+                      <span
+                        className="oi-bar put"
+                        style={{ width: `${Math.max(5, (oi.pe / maxVisibleOi) * 100)}%` }}
+                      />
+                      <span className="oi-tooltip" role="tooltip">
+                        <span>Expiry: <b>{expiry || '—'}</b></span>
+                        <span>Strike: <b>{strike.toLocaleString('en-IN')}</b></span>
+                        <span>CE OI: <b className="call-text">{formatOi(oi.ce)}</b></span>
+                        <span>CE OI Chg: <b className="call-text">{formatOi(ceOiChange)}</b></span>
+                        <span>PE OI: <b className="put-text">{formatOi(oi.pe)}</b></span>
+                        <span>PE OI Chg: <b className="put-text">{formatOi(peOiChange)}</b></span>
+                      </span>
+                    </button>
                   </div>
                 );
               })}

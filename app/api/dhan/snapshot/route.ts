@@ -267,6 +267,7 @@ export async function GET(request: NextRequest) {
           ? {
               ltp: Number(legs.ce.last_price || 0),
               oi: Number(legs.ce.oi || 0),
+              previousOi: Number(legs.ce.previous_oi || 0),
               previousClose: Number(legs.ce.previous_close_price || 0),
               securityId: Number(legs.ce.security_id),
             }
@@ -275,6 +276,7 @@ export async function GET(request: NextRequest) {
           ? {
               ltp: Number(legs.pe.last_price || 0),
               oi: Number(legs.pe.oi || 0),
+              previousOi: Number(legs.pe.previous_oi || 0),
               previousClose: Number(legs.pe.previous_close_price || 0),
               securityId: Number(legs.pe.security_id),
             }
