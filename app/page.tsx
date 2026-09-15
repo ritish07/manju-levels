@@ -1038,11 +1038,9 @@ export default function Home() {
           </div>
           <div className={`chain-table view-${chainView.toLowerCase()}`}>
             <div className="chain-row chain-labels">
-              <span>CALL OI</span>
               <span>CALL LTP</span>
               <span>STRIKE</span>
               <span>PUT LTP</span>
-              <span>PUT OI</span>
               <span>OI PROFILE</span>
             </div>
             <div className="chain-scroll">
@@ -1066,9 +1064,6 @@ export default function Home() {
                     className={`chain-row ${isAtm ? 'atm' : ''}`}
                     key={strike}
                   >
-                    <span className="oi">
-                      {formatOi(oi.ce)}
-                    </span>
                     <button
                       className={
                         selectedStrike === strike && side === 'CE'
@@ -1114,9 +1109,6 @@ export default function Home() {
                         {peChange.toFixed(1)}%
                       </small>
                     </button>
-                    <span className="oi">
-                      {formatOi(oi.pe)}
-                    </span>
                     <button
                       type="button"
                       className="oi-profile"
