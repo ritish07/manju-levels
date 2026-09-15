@@ -276,6 +276,18 @@ function findWeeklyOpen(candles: Candle[], fallback: number) {
   );
 }
 
+function findDayOpen(candles: Candle[], fallback: number) {
+  const latest = candles.at(-1);
+  if (!latest) return fallback;
+  const latestDate = istDate(new Date(latest.timestamp * 1000));
+  return (
+    candles.find(
+      (candle) =>
+        istDate(new Date(candle.timestamp * 1000)) === latestDate,
+    )?.open || fallback
+  );
+}
+
 export async function GET(request: NextRequest) {
   try {
     const params = request.nextUrl.searchParams;
@@ -303,6 +315,7 @@ export async function GET(request: NextRequest) {
           expiry: '',
           expiries: [],
           weeklyOpen: findWeeklyOpen(underlyingCandles, spot),
+          dayOpen: findDayOpen(underlyingCandles, spot),
           chain: [],
           selectedStrike: 0,
           side: '',
@@ -384,6 +397,7 @@ export async function GET(request: NextRequest) {
       indexFutureQuote(asset),
     ]);
     const weeklyOpen = findWeeklyOpen(underlyingCandles, spot);
+    const dayOpen = findDayOpen(underlyingCandles, spot);
     return NextResponse.json(
       {
         connected: true,
@@ -392,6 +406,7 @@ export async function GET(request: NextRequest) {
         expiry,
         expiries,
         weeklyOpen,
+        dayOpen,
         futurePrice: future?.price || 0,
         futureSymbol: future?.symbol || '',
         futureExpiry: future?.expiry || '',

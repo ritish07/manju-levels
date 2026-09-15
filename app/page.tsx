@@ -40,6 +40,7 @@ type LiveSnapshot = {
   expiry: string;
   expiries: string[];
   weeklyOpen: number;
+  dayOpen?: number;
   futurePrice?: number;
   futureSymbol?: string;
   futureExpiry?: string;
@@ -88,6 +89,7 @@ const ASSETS: Record<
     weeklyOpen: number;
     step: number;
     change: number;
+    intradayStep: number;
   }
 > = {
   NIFTY: {
@@ -97,6 +99,7 @@ const ASSETS: Record<
     weeklyOpen: 25114.0,
     step: 50,
     change: 0.42,
+    intradayStep: 59.65,
   },
   BANKNIFTY: {
     name: 'NIFTY BANK',
@@ -105,6 +108,7 @@ const ASSETS: Record<
     weeklyOpen: 57343.3,
     step: 100,
     change: -0.18,
+    intradayStep: 118,
   },
   SENSEX: {
     name: 'BSE SENSEX',
@@ -113,6 +117,7 @@ const ASSETS: Record<
     weeklyOpen: 81721.08,
     step: 100,
     change: 0.31,
+    intradayStep: 236,
   },
 };
 
@@ -224,6 +229,22 @@ function makeWeeklyLevels(open: number): ChartLevel[] {
   const resistance = withMidpoints(resistancePrimary, '#d94b52');
   const support = withMidpoints(supportPrimary, '#2e9b67');
   return [...resistance, ...support];
+}
+
+function makeIntradayLevels(open: number, step: number): ChartLevel[] {
+  const side = (direction: 1 | -1, color: string) =>
+    Array.from({ length: 17 }, (_, i) => {
+      const target = 1 + i * 0.5;
+      return {
+        value: open + direction * target * step,
+        label: targetLabel(target),
+        color,
+      };
+    });
+  return [
+    ...side(1, '#d94b52'),
+    ...side(-1, '#2e9b67').filter((level) => level.value > 0),
+  ];
 }
 
 function ResizeHandle({ onDrag }: { onDrag: (deltaX: number) => void }) {
@@ -703,6 +724,8 @@ export default function Home() {
   const [expiry, setExpiry] = useState('');
   const [chainView, setChainView] = useState<'ALL' | 'CALLS' | 'PUTS'>('ALL');
   const [showLevels, setShowLevels] = useState(true);
+  const [levelMode, setLevelMode] = useState<'INTRADAY' | 'WEEKLY'>('WEEKLY');
+  const [showSpot, setShowSpot] = useState(true);
   const [timeframe, setTimeframe] = useState<Timeframe>('5m');
   const [chainPercent, setChainPercent] = useState(28);
   const [chartSplit, setChartSplit] = useState(50);
@@ -801,7 +824,12 @@ export default function Home() {
     ? live.optionCandles
     : mockOptionCandles;
   const weeklyOpen = live?.weeklyOpen || meta.weeklyOpen;
-  const underlyingLevels = selectedStock ? [] : makeWeeklyLevels(weeklyOpen);
+  const dayOpen = live?.dayOpen || meta.spot;
+  const underlyingLevels = selectedStock
+    ? []
+    : levelMode === 'WEEKLY'
+      ? makeWeeklyLevels(weeklyOpen)
+      : makeIntradayLevels(dayOpen, meta.intradayStep);
   const optionOpen = optionCandles[0].open;
   const optionLevels = makeOptionLevels(optionOpen);
   const chainRows = live?.chain?.length
@@ -864,6 +892,7 @@ export default function Home() {
     );
     if (stock) {
       setSelectedStock(stock);
+      setShowSpot(true);
       setLive(null);
       setExpiry('');
     }
@@ -951,6 +980,14 @@ export default function Home() {
           </select>
           <ChevronDown />
         </label>
+        <label className="timeframe-picker level-mode-picker">
+          <span>LEVEL BASIS</span>
+          <select value={levelMode} onChange={(event) => setLevelMode(event.target.value as 'INTRADAY' | 'WEEKLY')}>
+            <option value="INTRADAY">Intraday</option>
+            <option value="WEEKLY">Weekly</option>
+          </select>
+          <ChevronDown />
+        </label>
         <div className="market-quote">
           <strong>{formatPrice(currentSpot)}</strong>
           <span className={meta.change >= 0 ? 'positive' : 'negative'}>
@@ -968,6 +1005,17 @@ export default function Home() {
           </span>
         </div>
         <div className="header-actions">
+          <button
+            className={`levels-toggle ${showSpot ? 'on' : ''}`}
+            role="switch"
+            aria-checked={showSpot}
+            disabled={Boolean(selectedStock)}
+            title={selectedStock ? 'Spot chart remains visible for stocks' : 'Show or hide spot chart'}
+            onClick={() => setShowSpot((value) => !value)}
+          >
+            <span />
+            Spot
+          </button>
           <button
             className={`levels-toggle ${showLevels ? 'on' : ''}`}
             role="switch"
@@ -992,26 +1040,30 @@ export default function Home() {
       <div
         className="workspace"
         style={{
-          gridTemplateColumns: `${100 - chainPercent}fr 6px ${chainPercent}fr`,
+          gridTemplateColumns: showSpot
+            ? `${100 - chainPercent}fr 6px ${chainPercent}fr`
+            : '50fr 6px 50fr',
         }}
       >
         <div
           className="charts-grid"
           style={{
-            gridTemplateColumns: `${chartSplit}fr 6px ${100 - chartSplit}fr`,
+            gridTemplateColumns: showSpot
+              ? `${chartSplit}fr 6px ${100 - chartSplit}fr`
+              : '1fr',
           }}
         >
-          <Chart
+          {showSpot && <Chart
             title={
               selectedStock
                 ? `${selectedStock.symbol} · ${selectedStock.name}`
                 : meta.name
             }
-            subtitle={`${timeframe} · ${selectedStock ? 'NSE' : 'NSE · Weekly open ' + formatPrice(weeklyOpen)}`}
+            subtitle={`${timeframe} · ${selectedStock ? 'NSE' : `NSE · ${levelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(levelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}`}
             candles={underlying}
             levels={showLevels ? underlyingLevels : []}
-          />
-          <ResizeHandle
+          />}
+          {showSpot && <ResizeHandle
             onDrag={(delta) =>
               setChartSplit((value) =>
                 Math.min(
@@ -1029,7 +1081,7 @@ export default function Home() {
                 ),
               )
             }
-          />
+          />}
           {selectedStock ? (
             <EmptyPane />
           ) : (
