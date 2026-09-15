@@ -8,7 +8,9 @@ import {
   Crosshair,
   Layers3,
   RefreshCw,
+  Search,
   Settings2,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
@@ -707,7 +709,9 @@ export default function Home() {
   const [selectedStock, setSelectedStock] = useState<NseInstrument | null>(
     null,
   );
-  const [instrumentQuery, setInstrumentQuery] = useState('NIFTY');
+  const [symbolSearchOpen, setSymbolSearchOpen] = useState(false);
+  const [symbolSearch, setSymbolSearch] = useState('');
+  const [symbolFilter, setSymbolFilter] = useState<'ALL' | 'INDICES' | 'STOCKS'>('ALL');
   const meta = ASSETS[asset];
   const currentSpot = live?.spot || (selectedStock ? 0 : meta.spot);
   const atm = Math.round(currentSpot / meta.step) * meta.step;
@@ -812,15 +816,41 @@ export default function Home() {
     1,
     ...oiSeries.flatMap((row) => [row.ce, row.pe]),
   );
+  const symbolResults = useMemo(() => {
+    const query = symbolSearch.trim().toLowerCase();
+    const indices = (Object.keys(ASSETS) as AssetKey[]).map((key) => ({
+      kind: 'INDICES' as const,
+      value: key,
+      symbol: key,
+      name: ASSETS[key].name,
+      exchange: key === 'SENSEX' ? 'BSE' : 'NSE',
+    }));
+    const stocks = instruments.map((item) => ({
+      kind: 'STOCKS' as const,
+      value: `${item.symbol} — ${item.name}`,
+      symbol: item.symbol,
+      name: item.name,
+      exchange: 'NSE',
+    }));
+    return [...indices, ...stocks]
+      .filter((item) => symbolFilter === 'ALL' || item.kind === symbolFilter)
+      .filter(
+        (item) =>
+          !query ||
+          item.symbol.toLowerCase().includes(query) ||
+          item.name.toLowerCase().includes(query),
+      )
+      .slice(0, 80);
+  }, [instruments, symbolFilter, symbolSearch]);
   const chooseAsset = (value: AssetKey) => {
     setSelectedStock(null);
-    setInstrumentQuery(value);
     setAsset(value);
     const next = ASSETS[value];
     setSelectedStrike(Math.round(next.spot / next.step) * next.step);
+    setSymbolSearchOpen(false);
+    setSymbolSearch('');
   };
   const chooseInstrument = (value: string) => {
-    setInstrumentQuery(value);
     if ((Object.keys(ASSETS) as AssetKey[]).includes(value as AssetKey)) {
       chooseAsset(value as AssetKey);
       return;
@@ -831,13 +861,66 @@ export default function Home() {
     );
     if (stock) {
       setSelectedStock(stock);
-      setInstrumentQuery(`${stock.symbol} — ${stock.name}`);
       setLive(null);
       setExpiry('');
     }
+    setSymbolSearchOpen(false);
+    setSymbolSearch('');
   };
+  useEffect(() => {
+    if (!symbolSearchOpen) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSymbolSearchOpen(false);
+    };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [symbolSearchOpen]);
   return (
     <main className="app-shell">
+      {symbolSearchOpen && (
+        <div
+          className="symbol-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSymbolSearchOpen(false);
+          }}
+        >
+          <section className="symbol-modal" role="dialog" aria-modal="true" aria-labelledby="symbol-search-title">
+            <header>
+              <h2 id="symbol-search-title">Symbol search</h2>
+              <button aria-label="Close symbol search" onClick={() => setSymbolSearchOpen(false)}><X /></button>
+            </header>
+            <label className="symbol-search-field">
+              <Search />
+              <input
+                autoFocus
+                value={symbolSearch}
+                onChange={(event) => setSymbolSearch(event.target.value)}
+                placeholder="Search NSE symbol or company"
+              />
+              {symbolSearch && <button aria-label="Clear search" onClick={() => setSymbolSearch('')}><X /></button>}
+            </label>
+            <div className="symbol-filters" role="tablist" aria-label="Symbol type">
+              {(['ALL', 'INDICES', 'STOCKS'] as const).map((filter) => (
+                <button key={filter} role="tab" aria-selected={symbolFilter === filter} className={symbolFilter === filter ? 'active' : ''} onClick={() => setSymbolFilter(filter)}>
+                  {filter === 'ALL' ? 'All' : filter === 'INDICES' ? 'Indices' : 'Stocks'}
+                </button>
+              ))}
+            </div>
+            <div className="symbol-results">
+              {symbolResults.map((item) => (
+                <button key={`${item.kind}-${item.value}`} onClick={() => chooseInstrument(item.value)}>
+                  <span className="symbol-result-mark">{item.symbol.slice(0, 1)}</span>
+                  <strong>{item.symbol}</strong>
+                  <span className="symbol-result-name">{item.name}</span>
+                  <small>{item.kind === 'INDICES' ? 'index' : 'stock'} · {item.exchange}</small>
+                </button>
+              ))}
+              {!symbolResults.length && <div className="symbol-empty">No matching NSE symbols</div>}
+            </div>
+            <footer>Search by NSE symbol or company name</footer>
+          </section>
+        </div>
+      )}
       <header className="topbar">
         <div className="brand">
           <span className="brand-glyph">M</span>
@@ -848,29 +931,10 @@ export default function Home() {
         </div>
         <div className="asset-picker">
           <span className="eyebrow">UNDERLYING</span>
-          <label>
-            <input
-              list="nse-instruments"
-              value={instrumentQuery}
-              onChange={(e) => chooseInstrument(e.target.value)}
-              onFocus={(e) => e.currentTarget.select()}
-              placeholder="Search NSE symbol or company"
-              aria-label="Search NSE index or stock"
-            />
-            <datalist id="nse-instruments">
-              {(Object.keys(ASSETS) as AssetKey[]).map((key) => (
-                <option key={key} value={key}>
-                  {ASSETS[key].name}
-                </option>
-              ))}
-              {instruments.map((item) => (
-                <option
-                  key={item.securityId}
-                  value={`${item.symbol} — ${item.name}`}
-                />
-              ))}
-            </datalist>
-          </label>
+          <button className="symbol-trigger" onClick={() => setSymbolSearchOpen(true)} aria-haspopup="dialog">
+            <span>{selectedStock ? selectedStock.symbol : asset}</span>
+            <ChevronDown />
+          </button>
         </div>
         <label className="timeframe-picker">
           <span>TIMEFRAME</span>
