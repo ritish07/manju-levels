@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
+  BriefcaseBusiness,
   ChevronDown,
   Crosshair,
   Layers3,
@@ -56,6 +57,21 @@ type NseInstrument = {
   name: string;
   segment: 'NSE_EQ';
   instrument: 'EQUITY';
+};
+type PaperMode = 'FORWARD' | 'BACKTEST';
+type PaperPosition = {
+  id: string;
+  mode: PaperMode;
+  status: 'OPEN' | 'CLOSED';
+  openTime: string;
+  closeTime: string | null;
+  contract: string;
+  side: Side;
+  quantity: number;
+  lotSize: number;
+  entryPrice: number;
+  exitPrice: number | null;
+  pnl: number;
 };
 const TIMEFRAMES: Timeframe[] = [
   '1m',
@@ -175,6 +191,14 @@ function formatOi(n: number) {
   if (Math.abs(n) >= 1000000) return `${(n / 1000000).toFixed(2)} M`;
   if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(2)} K`;
   return Math.round(n).toLocaleString('en-IN');
+}
+function formatCurrency(n: number) {
+  return n.toLocaleString('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 function formatExpiry(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value || 'Loading';
@@ -717,7 +741,140 @@ function Chart({
   );
 }
 
+function PositionsView({
+  mode,
+  onModeChange,
+  positions,
+}: {
+  mode: PaperMode;
+  onModeChange: (mode: PaperMode) => void;
+  positions: PaperPosition[];
+}) {
+  const startingCapital = 100000;
+  const visiblePositions = positions.filter((position) => position.mode === mode);
+  const realizedPnl = visiblePositions
+    .filter((position) => position.status === 'CLOSED')
+    .reduce((total, position) => total + position.pnl, 0);
+  const openPnl = visiblePositions
+    .filter((position) => position.status === 'OPEN')
+    .reduce((total, position) => total + position.pnl, 0);
+  const usedCapital = visiblePositions
+    .filter((position) => position.status === 'OPEN')
+    .reduce(
+      (total, position) => total + position.entryPrice * position.quantity,
+      0,
+    );
+  const availableCapital = startingCapital + realizedPnl - usedCapital;
+
+  return (
+    <section className="positions-view">
+      <div className="positions-hero">
+        <div>
+          <span className="eyebrow">PAPER TESTING</span>
+          <h1>Positions</h1>
+          <p>Review simulated option trades and capital performance.</p>
+        </div>
+        <div className="paper-mode" role="tablist" aria-label="Paper testing mode">
+          <button
+            role="tab"
+            aria-selected={mode === 'FORWARD'}
+            className={mode === 'FORWARD' ? 'active' : ''}
+            onClick={() => onModeChange('FORWARD')}
+          >
+            Forward test
+          </button>
+          <button
+            role="tab"
+            aria-selected={mode === 'BACKTEST'}
+            className={mode === 'BACKTEST' ? 'active' : ''}
+            onClick={() => onModeChange('BACKTEST')}
+          >
+            Backtest
+          </button>
+        </div>
+      </div>
+
+      <div className="capital-grid">
+        <article>
+          <span>Starting capital</span>
+          <strong>{formatCurrency(startingCapital)}</strong>
+          <small>Demo account</small>
+        </article>
+        <article>
+          <span>Available capital</span>
+          <strong>{formatCurrency(availableCapital)}</strong>
+          <small>{usedCapital ? `${formatCurrency(usedCapital)} deployed` : 'No capital deployed'}</small>
+        </article>
+        <article>
+          <span>Realized P&amp;L</span>
+          <strong className={realizedPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(realizedPnl)}</strong>
+          <small>{visiblePositions.filter((position) => position.status === 'CLOSED').length} closed trades</small>
+        </article>
+        <article>
+          <span>Open P&amp;L</span>
+          <strong className={openPnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(openPnl)}</strong>
+          <small>{visiblePositions.filter((position) => position.status === 'OPEN').length} open positions</small>
+        </article>
+      </div>
+
+      <div className="positions-ledger">
+        <header>
+          <div>
+            <h2>{mode === 'FORWARD' ? 'Forward-test positions' : 'Backtest positions'}</h2>
+            <span>Strategy execution ledger</span>
+          </div>
+          <span className="engine-state"><i /> Engine ready · Strategy pending</span>
+        </header>
+        <div className="position-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Open time</th>
+                <th>Close time</th>
+                <th>Option contract</th>
+                <th>Type</th>
+                <th>Quantity</th>
+                <th>Lot size</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>P&amp;L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visiblePositions.map((position) => (
+                <tr key={position.id}>
+                  <td><span className={`position-status ${position.status.toLowerCase()}`}>{position.status}</span></td>
+                  <td>{position.openTime}</td>
+                  <td>{position.closeTime || '—'}</td>
+                  <td><strong>{position.contract}</strong></td>
+                  <td>{position.side}</td>
+                  <td>{position.quantity.toLocaleString('en-IN')}</td>
+                  <td>{position.lotSize.toLocaleString('en-IN')}</td>
+                  <td>{formatPrice(position.entryPrice)}</td>
+                  <td>{position.exitPrice === null ? '—' : formatPrice(position.exitPrice)}</td>
+                  <td className={position.pnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(position.pnl)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!visiblePositions.length && (
+            <div className="positions-empty">
+              <span><BriefcaseBusiness /></span>
+              <strong>No paper positions yet</strong>
+              <p>Trades will appear here automatically after the strategy rules are connected.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function Home() {
+  const [appView, setAppView] = useState<'MARKET' | 'POSITIONS'>('MARKET');
+  const [paperMode, setPaperMode] = useState<PaperMode>('FORWARD');
+  const [paperPositions] = useState<PaperPosition[]>([]);
   const [asset, setAsset] = useState<AssetKey>('NIFTY');
   const [side, setSide] = useState<Side>('CE');
   const [selectedStrike, setSelectedStrike] = useState(25100);
@@ -1048,13 +1205,21 @@ export default function Home() {
           >
             {live ? 'Dhan connected' : 'Dhan setup required'}
           </span>
+          <button
+            className={`positions-nav ${appView === 'POSITIONS' ? 'active' : ''}`}
+            aria-current={appView === 'POSITIONS' ? 'page' : undefined}
+            onClick={() => setAppView((view) => view === 'POSITIONS' ? 'MARKET' : 'POSITIONS')}
+          >
+            <BriefcaseBusiness />
+            {appView === 'POSITIONS' ? 'Charts' : 'Positions'}
+          </button>
           <button aria-label="Settings">
             <Settings2 />
           </button>
           <div className="avatar">RG</div>
         </div>
       </header>
-      <div
+      {appView === 'MARKET' ? <div
         className="workspace"
         style={{
           gridTemplateColumns: showSpot
@@ -1320,15 +1485,26 @@ export default function Home() {
             </div>
           </div>
         </aside>
-      </div>
+      </div> : (
+        <PositionsView
+          mode={paperMode}
+          onModeChange={setPaperMode}
+          positions={paperPositions}
+        />
+      )}
       <footer className="statusbar">
         <div>
-          <span className="status-dot" /> Live workspace
+          <span className="status-dot" /> {appView === 'MARKET' ? 'Live workspace' : 'Paper testing workspace'}
         </div>
         <div>
-          <Crosshair /> Crosshair <span className="divider" />
-          <Layers3 /> Formula levels <span className="divider" />
-          <BarChart3 /> {timeframe}
+          {appView === 'MARKET' ? <>
+            <Crosshair /> Crosshair <span className="divider" />
+            <Layers3 /> Formula levels <span className="divider" />
+            <BarChart3 /> {timeframe}
+          </> : <>
+            <BriefcaseBusiness /> ₹1,00,000 demo capital <span className="divider" />
+            Strategy pending
+          </>}
         </div>
       </footer>
     </main>
