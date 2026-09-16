@@ -726,6 +726,7 @@ export default function Home() {
   const [showLevels, setShowLevels] = useState(true);
   const [levelMode, setLevelMode] = useState<'INTRADAY' | 'WEEKLY'>('WEEKLY');
   const [showSpot, setShowSpot] = useState(true);
+  const [levelPopoverStrike, setLevelPopoverStrike] = useState<number | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>('5m');
   const [chainPercent, setChainPercent] = useState(28);
   const [chartSplit, setChartSplit] = useState(50);
@@ -832,6 +833,14 @@ export default function Home() {
       : makeIntradayLevels(dayOpen, meta.intradayStep);
   const optionOpen = optionCandles[0].open;
   const optionLevels = makeOptionLevels(optionOpen);
+  const optionLast = optionCandles.at(-1)?.close ?? optionOpen;
+  const immediateSupport = optionLevels
+    .filter((level) => level.value < optionLast)
+    .sort((a, b) => b.value - a.value)[0];
+  const immediateResistance = optionLevels
+    .filter((level) => level.value > optionLast)
+    .sort((a, b) => a.value - b.value)[0];
+  const optionContractReady = !live || live.selectedStrike === selectedStrike;
   const chainRows = live?.chain?.length
     ? live.chain.filter((row) => Math.abs(row.strike - atm) <= meta.step * 6)
     : mockStrikes.map((strike) => ({ strike, ce: null, pe: null }));
@@ -907,6 +916,14 @@ export default function Home() {
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
   }, [symbolSearchOpen]);
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('[data-strike-popover]')) setLevelPopoverStrike(null);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, []);
   return (
     <main className="app-shell">
       {symbolSearchOpen && (
@@ -1198,6 +1215,7 @@ export default function Home() {
                       onClick={() => {
                         setSelectedStrike(strike);
                         setSide('CE');
+                        setLevelPopoverStrike(null);
                       }}
                     >
                       {formatPrice(ce)}
@@ -1210,10 +1228,28 @@ export default function Home() {
                     </button>
                     <button
                       className="strike"
-                      onClick={() => setSelectedStrike(strike)}
+                      data-strike-popover
+                      onClick={() => {
+                        setSelectedStrike(strike);
+                        setLevelPopoverStrike((current) => current === strike ? null : strike);
+                      }}
                     >
                       {strike.toLocaleString('en-IN')}
                       {isAtm && <small>ATM</small>}
+                      {levelPopoverStrike === strike && (
+                        <span className="strike-popover" onPointerDown={(event) => event.stopPropagation()}>
+                          <span className="strike-popover-title">{meta.short} {strike.toLocaleString('en-IN')} {side}</span>
+                          {!optionContractReady ? (
+                            <span className="strike-popover-loading">Updating contract…</span>
+                          ) : (
+                            <>
+                              <span className="strike-level resistance"><small>Immediate resistance</small><b>{immediateResistance ? `${immediateResistance.label} · ${formatPrice(immediateResistance.value)}` : '—'}</b></span>
+                              <span className="strike-level current"><small>Current option price</small><b>{formatPrice(optionLast)}</b></span>
+                              <span className="strike-level support"><small>Immediate support</small><b>{immediateSupport ? `${immediateSupport.label} · ${formatPrice(immediateSupport.value)}` : '—'}</b></span>
+                            </>
+                          )}
+                        </span>
+                      )}
                     </button>
                     <button
                       className={
@@ -1224,6 +1260,7 @@ export default function Home() {
                       onClick={() => {
                         setSelectedStrike(strike);
                         setSide('PE');
+                        setLevelPopoverStrike(null);
                       }}
                     >
                       {formatPrice(pe)}
