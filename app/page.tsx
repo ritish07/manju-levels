@@ -586,6 +586,7 @@ function Chart({
           })}
           {levels.map((level) => {
             const levelY = y(level.value);
+            const isOpenLevel = level.label === 'OPEN';
             return levelY >= 0 && levelY <= plotH ? (
               <g key={`${level.color}-${level.label}-${level.value}`}>
                 <line
@@ -594,8 +595,8 @@ function Chart({
                   x2={width - padR}
                   y2={levelY}
                   stroke={level.color}
-                  strokeWidth="1.35"
-                  strokeDasharray="5 4"
+                  strokeWidth={isOpenLevel ? '2' : '1.5'}
+                  strokeDasharray={isOpenLevel ? undefined : '5 4'}
                 />
                 <text
                   x={plotW - 8}
@@ -988,8 +989,17 @@ export default function Home() {
     : levelMode === 'WEEKLY'
       ? makeWeeklyLevels(weeklyOpen)
       : makeIntradayLevels(dayOpen, meta.intradayStep);
+  const underlyingOpen = levelMode === 'WEEKLY' ? weeklyOpen : dayOpen;
+  const underlyingChartLevels = [
+    ...underlyingLevels,
+    { value: underlyingOpen, label: 'OPEN', color: '#f28c18' },
+  ];
   const optionOpen = optionCandles[0].open;
   const optionLevels = makeOptionLevels(optionOpen);
+  const optionChartLevels = [
+    ...optionLevels,
+    { value: optionOpen, label: 'OPEN', color: '#f28c18' },
+  ];
   const optionLast = optionCandles.at(-1)?.close ?? optionOpen;
   const immediateSupport = optionLevels
     .filter((level) => level.value < optionLast)
@@ -1243,7 +1253,7 @@ export default function Home() {
             }
             subtitle={`${timeframe} · ${selectedStock ? 'NSE' : `NSE · ${levelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(levelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}`}
             candles={underlying}
-            levels={showLevels ? underlyingLevels : []}
+            levels={showLevels ? underlyingChartLevels : []}
           />}
           {showSpot && <ResizeHandle
             onDrag={(delta) =>
@@ -1271,7 +1281,7 @@ export default function Home() {
               title={`${meta.short} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
               subtitle={`${timeframe} · NSE F&O`}
               candles={optionCandles}
-              levels={showLevels ? optionLevels : []}
+              levels={showLevels ? optionChartLevels : []}
               accent
             />
           )}
