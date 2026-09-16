@@ -47,7 +47,7 @@ async function dhan(path: string, body: object) {
     body: JSON.stringify(body),
     cache: 'no-store',
   });
-  const data = await response.json().catch(() => ({}));
+  const data: any = await response.json().catch(() => ({}));
   if (!response.ok || data?.status === 'failure')
     throw new Error(
       data?.remarks?.error_message ||

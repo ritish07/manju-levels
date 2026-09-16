@@ -72,6 +72,10 @@ type PaperPosition = {
   entryPrice: number;
   exitPrice: number | null;
   pnl: number;
+  stopPrice: number;
+  targetPrice: number;
+  closeReason: string | null;
+  signalType: string;
 };
 const TIMEFRAMES: Timeframe[] = [
   '1m',
@@ -746,10 +750,12 @@ function PositionsView({
   mode,
   onModeChange,
   positions,
+  engineStatus,
 }: {
   mode: PaperMode;
   onModeChange: (mode: PaperMode) => void;
   positions: PaperPosition[];
+  engineStatus: string;
 }) {
   const startingCapital = 100000;
   const visiblePositions = positions.filter((position) => position.mode === mode);
@@ -824,7 +830,7 @@ function PositionsView({
             <h2>{mode === 'FORWARD' ? 'Forward-test positions' : 'Backtest positions'}</h2>
             <span>Strategy execution ledger</span>
           </div>
-          <span className="engine-state"><i /> Engine ready · Strategy pending</span>
+          <span className={`engine-state ${engineStatus === 'Monitoring live data' ? 'active' : ''}`}><i /> {engineStatus}</span>
         </header>
         <div className="position-table-wrap">
           <table>
@@ -838,8 +844,11 @@ function PositionsView({
                 <th>Quantity</th>
                 <th>Lot size</th>
                 <th>Entry</th>
+                <th>Stop</th>
+                <th>Target</th>
                 <th>Exit</th>
                 <th>P&amp;L</th>
+                <th>Result</th>
               </tr>
             </thead>
             <tbody>
@@ -853,8 +862,11 @@ function PositionsView({
                   <td>{position.quantity.toLocaleString('en-IN')}</td>
                   <td>{position.lotSize.toLocaleString('en-IN')}</td>
                   <td>{formatPrice(position.entryPrice)}</td>
+                  <td className="negative">{formatPrice(position.stopPrice)}</td>
+                  <td className="positive">{formatPrice(position.targetPrice)}</td>
                   <td>{position.exitPrice === null ? '—' : formatPrice(position.exitPrice)}</td>
                   <td className={position.pnl >= 0 ? 'positive' : 'negative'}>{formatCurrency(position.pnl)}</td>
+                  <td>{position.closeReason || '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -863,7 +875,7 @@ function PositionsView({
             <div className="positions-empty">
               <span><BriefcaseBusiness /></span>
               <strong>No paper positions yet</strong>
-              <p>Trades will appear here automatically after the strategy rules are connected.</p>
+              <p>The engine is monitoring the two-strikes-ITM CE and PE contracts. Valid T3 trades will appear here automatically.</p>
             </div>
           )}
         </div>
@@ -875,7 +887,8 @@ function PositionsView({
 export default function Home() {
   const [appView, setAppView] = useState<'MARKET' | 'POSITIONS'>('MARKET');
   const [paperMode, setPaperMode] = useState<PaperMode>('FORWARD');
-  const [paperPositions] = useState<PaperPosition[]>([]);
+  const [paperPositions, setPaperPositions] = useState<PaperPosition[]>([]);
+  const [paperEngineStatus, setPaperEngineStatus] = useState('Waiting for Dhan credentials');
   const [asset, setAsset] = useState<AssetKey>('NIFTY');
   const [side, setSide] = useState<Side>('CE');
   const [selectedStrike, setSelectedStrike] = useState(25100);
@@ -903,8 +916,47 @@ export default function Home() {
   useEffect(() => {
     fetch('/api/dhan/instruments')
       .then((response) => response.json())
-      .then((data) => setInstruments(data.instruments || []))
+      .then((data: any) => setInstruments(data.instruments || []))
       .catch(() => setInstruments([]));
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const assets: AssetKey[] = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+    let index = 0;
+    const run = async () => {
+      try {
+        const response = await fetch(`/api/paper/tick?asset=${assets[index]}`, {
+          method: 'POST',
+          cache: 'no-store',
+        });
+        const data: any = await response.json();
+        if (!active) return;
+        setPaperEngineStatus(response.ok ? 'Monitoring live data' : data.error || 'Engine unavailable');
+        index = (index + 1) % assets.length;
+      } catch {
+        if (active) setPaperEngineStatus('Engine unavailable');
+      } finally {
+        if (active) timer = setTimeout(run, 10000);
+      }
+    };
+    run();
+    return () => { active = false; clearTimeout(timer); };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      try {
+        const response = await fetch('/api/paper/positions', { cache: 'no-store' });
+        const data: any = await response.json();
+        if (active && response.ok) setPaperPositions(data.positions || []);
+      } finally {
+        if (active) timer = setTimeout(load, 5000);
+      }
+    };
+    load();
+    return () => { active = false; clearTimeout(timer); };
   }, []);
   useEffect(() => {
     let active = true;
@@ -925,7 +977,7 @@ export default function Home() {
         const response = await fetch(`/api/dhan/snapshot?${query}`, {
           cache: 'no-store',
         });
-        const data = await response.json();
+        const data: any = await response.json();
         if (!response.ok)
           throw new Error(data.error || 'Dhan feed unavailable');
         if (!active) return;
@@ -1500,6 +1552,7 @@ export default function Home() {
           mode={paperMode}
           onModeChange={setPaperMode}
           positions={paperPositions}
+          engineStatus={paperEngineStatus}
         />
       )}
       <footer className="statusbar">
