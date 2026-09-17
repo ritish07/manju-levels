@@ -1,3 +1,6 @@
+import { tradingDayCandles, tradingDate } from '@/app/lib/option-levels';
+import { dhan } from '@/app/lib/dhan-api';
+import { dhanHeaders } from '@/app/lib/dhan-auth';
 import { NextRequest, NextResponse } from 'next/server';
 
 const DHAN_API = 'https://api.dhan.co/v2';
@@ -28,34 +31,7 @@ type Candle = {
   time: string;
 };
 
-function headers() {
-  const clientId = process.env.DHAN_CLIENT_ID;
-  const token = process.env.DHAN_ACCESS_TOKEN;
-  if (!clientId || !token) throw new Error('DHAN_NOT_CONFIGURED');
-  return {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    'client-id': clientId,
-    'access-token': token,
-  };
-}
 
-async function dhan(path: string, body: object) {
-  const response = await fetch(`${DHAN_API}${path}`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify(body),
-    cache: 'no-store',
-  });
-  const data: any = await response.json().catch(() => ({}));
-  if (!response.ok || data?.status === 'failure')
-    throw new Error(
-      data?.remarks?.error_message ||
-        data?.errorMessage ||
-        `Dhan HTTP ${response.status}`,
-    );
-  return data;
-}
 
 function parseCsvLine(line: string) {
   const fields: string[] = [];
@@ -203,6 +179,8 @@ function aggregate(
 async function history(
   spec: { securityId: number; segment: string; instrument: string },
   timeframe: string,
+  limit = true,
+  currentDay = false,
 ) {
   const now = new Date();
   const from = new Date(
@@ -257,10 +235,25 @@ async function history(
     instrument: spec.instrument,
     interval,
     oi: spec.segment !== 'IDX_I',
-    fromDate: `${istDate(from)} 09:00:00`,
+    fromDate: `${istDate(currentDay ? now : from)} 09:15:00`,
     toDate: `${istDate(now)} 23:59:59`,
   });
-  return aggregate(normalize(raw, timeframe), factor, timeframe).slice(-180);
+  const candles = aggregate(normalize(raw, timeframe), factor, timeframe);
+  return limit ? candles.slice(-180) : candles;
+}
+
+// The first session open is immutable. Never derive it from a truncated chart window.
+const optionOpens = new Map<string, number>();
+async function optionDayOpen(spec: { securityId: number; segment: string; instrument: string }) {
+  const key = `${tradingDate()}:${spec.segment}:${spec.securityId}`;
+  if (optionOpens.has(key)) return optionOpens.get(key)!;
+  const candles = await history(spec, '1m', false, true);
+  const open = tradingDayCandles(candles)[0]?.open || 0;
+  if (open > 0) optionOpens.set(key, open);
+  if (optionOpens.size > 300) for (const cachedKey of optionOpens.keys()) {
+    if (!cachedKey.startsWith(`${tradingDate()}:`)) optionOpens.delete(cachedKey);
+  }
+  return open;
 }
 
 function findWeeklyOpen(candles: Candle[], fallback: number) {
@@ -332,6 +325,20 @@ export async function GET(request: NextRequest) {
         { error: 'Unsupported underlying' },
         { status: 400 },
       );
+    const optionSecurityId = Number(params.get('optionSecurityId') || 0);
+    if (params.get('optionsOnly') === '1') {
+      if (!Number.isSafeInteger(optionSecurityId) || optionSecurityId <= 0 || wantedStrike <= 0)
+        return NextResponse.json({ error: 'Invalid option contract' }, { status: 400 });
+      const optionSpec = { securityId: optionSecurityId,
+        segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO', instrument: 'OPTIDX' };
+      const [optionCandles, open] = await Promise.all([
+        history(optionSpec, timeframe), optionDayOpen(optionSpec),
+      ]);
+      return NextResponse.json({ connected: true, optionsOnly: true, asset,
+        selectedStrike: wantedStrike, side: side.toUpperCase(), optionCandles,
+        optionDayOpen: open, updatedAt: new Date().toISOString() },
+        { headers: { 'Cache-Control': 'no-store' } });
+    }
     const expiryResponse = await dhan('/optionchain/expirylist', {
       UnderlyingScrip: spec.securityId,
       UnderlyingSeg: spec.segment,
@@ -373,16 +380,17 @@ export async function GET(request: NextRequest) {
       }))
       .sort((a, b) => a.strike - b.strike);
     const spot = Number(chainResponse.data?.last_price || 0);
+    const targetStrike = wantedStrike || spot;
     const selected = chain.reduce(
       (best, row) =>
-        Math.abs(row.strike - wantedStrike) <
-        Math.abs(best.strike - wantedStrike)
+        Math.abs(row.strike - targetStrike) <
+        Math.abs(best.strike - targetStrike)
           ? row
           : best,
       chain[0],
     );
     const contract = selected?.[side];
-    const [underlyingCandles, optionCandles, future] = await Promise.all([
+    const [underlyingCandles, optionCandles, open, future] = await Promise.all([
       history(spec, timeframe),
       contract
         ? history(
@@ -394,6 +402,10 @@ export async function GET(request: NextRequest) {
             timeframe,
           )
         : Promise.resolve([]),
+      contract
+        ? optionDayOpen({ securityId: contract.securityId,
+            segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO', instrument: 'OPTIDX' })
+        : Promise.resolve(0),
       indexFutureQuote(asset),
     ]);
     const weeklyOpen = findWeeklyOpen(underlyingCandles, spot);
@@ -415,6 +427,7 @@ export async function GET(request: NextRequest) {
         side: side.toUpperCase(),
         underlyingCandles,
         optionCandles,
+        optionDayOpen: open,
         updatedAt: new Date().toISOString(),
       },
       { headers: { 'Cache-Control': 'no-store' } },

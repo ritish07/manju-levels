@@ -32,8 +32,8 @@ html{color-scheme:light!important}
 
 /* Unified density and typography system */
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:12px;line-height:1.35}
-.app-shell{grid-template-rows:64px minmax(0,1fr) 30px}
-.topbar{padding:0 20px;gap:24px}
+.app-shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) 30px}
+.topbar{min-height:64px;flex-wrap:wrap;padding:10px 20px;gap:12px 24px}
 .brand{width:152px;gap:10px}.brand-glyph{width:32px;height:32px}.brand strong{font-size:13px}.brand small{font-size:8px;margin-top:3px}
 .eyebrow{font-size:9px;line-height:1;letter-spacing:.12em;margin-bottom:6px}
 .asset-picker{gap:12px}.asset-picker label{height:36px;min-width:166px}.asset-picker select{font-size:12px;padding-left:12px}
@@ -62,3 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-s
 
 /* High-visibility typography */
 body{font-size:13px;font-weight:500}.brand strong{font-size:14px;font-weight:800}.brand small{font-size:9px;font-weight:700}.eyebrow{font-size:10px;font-weight:800}.symbol-trigger,.timeframe-picker select{font-size:12px!important;font-weight:750!important}.timeframe-picker>span{font-size:8px;font-weight:800}.market-quote strong{font-size:19px;font-weight:800}.market-quote>span:not(.live){font-weight:700}.live,.data-source{font-size:10px;font-weight:700}.header-actions .levels-toggle,.header-actions .positions-nav{font-size:11px;font-weight:750}.chart-title{font-size:15px;font-weight:800}.chart-sub{font-size:11px;font-weight:600;color:#64676a}.axis-label{font-size:14px;font-weight:550;fill:#282b2d}.target-label{font-size:12px;font-weight:850}.level-label{font-size:12px;font-weight:800}.crosshair-label{font-size:13px;font-weight:650}.chart-foot{font-size:10px;font-weight:600}.chain-head h2{font-size:19px;font-weight:800}.chain-controls label span{font-size:10px;font-weight:800}.chain-controls select,.segmented button{font-size:11px;font-weight:750}.chain-summary span{font-size:10px;font-weight:600}.chain-summary b{font-size:13px;font-weight:800}.chain-labels{font-size:9px;font-weight:800}.chain-row button{font-size:13px;font-weight:700}.chain-row .strike{font-size:14px;font-weight:850}.chain-row small{font-size:9px;font-weight:700}.chain-foot span{font-size:9px;font-weight:750}.chain-foot b{font-size:12px;font-weight:800}.statusbar{font-size:10px;font-weight:600}.oi-tooltip{font-size:11px;font-weight:550}.oi-tooltip b{font-weight:750}
+
+.token-status-bar {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 20px;background:#edf7ee;font-size:12px;} .token-status-bar button {padding:6px 12px;border:1px solid #94b49a;border-radius:5px;background:white;} .token-status-bar button:disabled {opacity:.55;cursor:not-allowed;}
+
+.chart-empty{position:static;display:flex;align-items:center;justify-content:center;color:var(--muted);padding:24px;min-height:0}

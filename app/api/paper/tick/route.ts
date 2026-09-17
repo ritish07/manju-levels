@@ -1,3 +1,6 @@
+import { optionTriggerLevels, nextOptionLevelBelow, touchesOptionLevel as touched, tradingDayCandles } from '@/app/lib/option-levels';
+import { dhan } from '@/app/lib/dhan-api';
+import { dhanHeaders } from '@/app/lib/dhan-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { ensurePaperDb } from '@/app/lib/paper-db';
 
@@ -26,30 +29,7 @@ type OpenRow = {
 
 let masterCache: { expires: number; lots: Map<number, number> } | null = null;
 
-function dhanHeaders() {
-  const clientId = process.env.DHAN_CLIENT_ID;
-  const token = process.env.DHAN_ACCESS_TOKEN;
-  if (!clientId || !token) throw new Error('DHAN_NOT_CONFIGURED');
-  return {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    'client-id': clientId,
-    'access-token': token,
-  };
-}
 
-async function dhan(path: string, body: object) {
-  const response = await fetch(`${DHAN_API}${path}`, {
-    method: 'POST',
-    headers: dhanHeaders(),
-    body: JSON.stringify(body),
-    cache: 'no-store',
-  });
-  const data: any = await response.json().catch(() => ({}));
-  if (!response.ok || data?.status === 'failure')
-    throw new Error(data?.remarks?.error_message || data?.errorMessage || `Dhan HTTP ${response.status}`);
-  return data;
-}
 
 function parseCsvLine(line: string) {
   const fields: string[] = [];
@@ -131,55 +111,36 @@ async function optionHistory(securityId: number, segment: string): Promise<Candl
   }));
 }
 
-function levels(open: number) {
-  const half = 1.5 * Math.sqrt(open);
-  return {
-    half,
-    lowerT3: open - 5 * half,
-    nextLower: open - 6 * half,
-    upperT3: open + 5 * half,
-  };
-}
-
-function nextLevelBelow(open: number, price: number) {
-  const half = 1.5 * Math.sqrt(open);
-  const candidates = [open, ...Array.from({ length: 16 }, (_, i) => open + (i + 1) * half), ...Array.from({ length: 16 }, (_, i) => open - (i + 1) * half)]
-    .filter((value) => value > 0 && value < price)
-    .sort((a, b) => b - a);
-  return candidates[0] || Math.max(0.05, price - half);
-}
-
-function touched(candle: Candle, value: number) {
-  return value > 0 && candle.low <= value && candle.high >= value;
-}
-
 async function insertPosition(args: {
   asset: Asset; sourceSide: Side; contract: Contract; expiry: string; signalType: string;
   signalLevel: number; signalKey: string; entry: number; stop: number; target: number; timestamp: number;
 }) {
   const db = await ensurePaperDb();
-  const claimed = await db.prepare('INSERT OR IGNORE INTO paper_signals (signal_key, created_at) VALUES (?, ?)')
-    .bind(args.signalKey, new Date().toISOString()).run();
-  if (!claimed.meta.changes) return false;
   const lot = await lotSize(args.contract.securityId);
-  const capital = await db.prepare(`SELECT
+  // Claim the signal and fund its position together, with no asynchronous gap.
+  return db.raw.transaction(() => {
+    const capital = db.raw.prepare(`SELECT
       COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN pnl ELSE 0 END), 0) AS realized,
       COALESCE(SUM(CASE WHEN status = 'OPEN' THEN entry_price * quantity ELSE 0 END), 0) AS deployed
-    FROM paper_positions`).first<{ realized: number; deployed: number }>();
-  const available = STARTING_CAPITAL + Number(capital?.realized || 0) - Number(capital?.deployed || 0);
-  if (args.entry * lot > available) return false;
-  const id = crypto.randomUUID();
-  const openTime = new Date(args.timestamp * 1000).toISOString();
-  const contractName = `${args.asset} ${args.expiry} ${args.contract.strike.toLocaleString('en-IN')} ${args.contract.side}`;
-  await db.prepare(`INSERT INTO paper_positions (
-      id, mode, asset, source_side, side, strike, contract, expiry, security_id, status,
-      signal_type, signal_level, open_time, quantity, lot_size, entry_price, stop_price,
-      target_price, pnl, created_at
-    ) VALUES (?, 'FORWARD', ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`)
-    .bind(id, args.asset, args.sourceSide, args.contract.side, args.contract.strike, contractName,
-      args.expiry, args.contract.securityId, args.signalType, args.signalLevel, openTime,
-      lot, lot, args.entry, args.stop, args.target, new Date().toISOString()).run();
-  return true;
+      FROM paper_positions`).get() as { realized: number; deployed: number };
+    const available = STARTING_CAPITAL + capital.realized - capital.deployed;
+    if (args.entry * lot > available) return false;
+    const claimed = db.raw.prepare('INSERT OR IGNORE INTO paper_signals (signal_key, created_at) VALUES (?, ?)')
+      .run(args.signalKey, new Date().toISOString());
+    if (!claimed.changes) return false;
+    const id = crypto.randomUUID();
+    const openTime = new Date(args.timestamp * 1000).toISOString();
+    const contractName = `${args.asset} ${args.expiry} ${args.contract.strike.toLocaleString('en-IN')} ${args.contract.side}`;
+    db.raw.prepare(`INSERT INTO paper_positions (
+        id, mode, asset, source_side, side, strike, contract, expiry, security_id, status,
+        signal_type, signal_level, open_time, quantity, lot_size, entry_price, stop_price,
+        target_price, pnl, created_at
+      ) VALUES (?, 'FORWARD', ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`)
+      .run(id, args.asset, args.sourceSide, args.contract.side, args.contract.strike, contractName,
+        args.expiry, args.contract.securityId, args.signalType, args.signalLevel, openTime,
+        lot, lot, args.entry, args.stop, args.target, new Date().toISOString());
+    return true;
+  })();
 }
 
 async function closePosition(position: OpenRow, candle: Candle, reason: 'STOP' | 'TARGET' | 'EOD', exit: number) {
@@ -191,7 +152,7 @@ async function closePosition(position: OpenRow, candle: Candle, reason: 'STOP' |
 
 export async function POST(request: NextRequest) {
   try {
-    dhanHeaders();
+    await dhanHeaders();
     const requested = (request.nextUrl.searchParams.get('asset') || 'NIFTY') as Asset;
     if (!ASSETS[requested]) return NextResponse.json({ error: 'Unsupported asset' }, { status: 400 });
     const asset = requested;
@@ -206,9 +167,9 @@ export async function POST(request: NextRequest) {
     const rows = Object.entries(chainData.data?.oc || {}).map(([strikeText, legs]: [string, any]) => ({ strike: Number(strikeText), legs }));
     const atm = Math.round(spot / spec.step) * spec.step;
     const pick = (strike: number, side: Side): Contract => {
-      const row = rows.reduce((best, item) => Math.abs(item.strike - strike) < Math.abs(best.strike - strike) ? item : best, rows[0]);
+      const row = rows.find((item) => item.strike === strike);
       const leg = side === 'CE' ? row?.legs?.ce : row?.legs?.pe;
-      if (!leg) throw new Error(`Missing ${side} contract`);
+      if (!row || !leg || !Number(leg.security_id)) throw new Error(`Missing ${strike} ${side} contract`);
       return { securityId: Number(leg.security_id), strike: row.strike, side, ltp: Number(leg.last_price || 0) };
     };
     const ce = pick(atm - 2 * spec.step, 'CE');
@@ -217,8 +178,8 @@ export async function POST(request: NextRequest) {
       optionHistory(ce.securityId, spec.fno), optionHistory(pe.securityId, spec.fno),
     ]);
     const today = clock.date;
-    const todayCe = ceHistory.filter((candle) => candleDate(candle.timestamp) === today);
-    const todayPe = peHistory.filter((candle) => candleDate(candle.timestamp) === today);
+    const todayCe = tradingDayCandles(ceHistory, today);
+    const todayPe = tradingDayCandles(peHistory, today);
     const current = { CE: todayCe.at(-1), PE: todayPe.at(-1) } as const;
     const opens = { CE: todayCe[0]?.open, PE: todayPe[0]?.open } as const;
     const histories = new Map<number, Candle[]>([[ce.securityId, ceHistory], [pe.securityId, peHistory]]);
@@ -249,20 +210,21 @@ export async function POST(request: NextRequest) {
         const contract = contracts[side];
         const candle = candles[side];
         const open = opens[side];
-        const formula = levels(open);
-        if (touched(candle, formula.lowerT3)) {
+        const formula = optionTriggerLevels(open);
+        if (formula.lowerT3 !== undefined && formula.nextLower !== undefined && formula.nextLower > 0 && touched(candle, formula.lowerT3)) {
           opened += Number(await insertPosition({ asset, sourceSide: side, contract, expiry,
             signalType: 'LOWER_T3', signalLevel: formula.lowerT3,
             signalKey: `${today}:${asset}:LOWER_T3:${side}:${contract.securityId}:${candle.timestamp}`,
             entry: formula.lowerT3, stop: formula.nextLower, target: open, timestamp: candle.timestamp }));
         }
-        if (touched(candle, formula.upperT3)) {
+        if (formula.upperT3 !== undefined && touched(candle, formula.upperT3)) {
           const oppositeSide: Side = side === 'CE' ? 'PE' : 'CE';
           const opposite = contracts[oppositeSide];
           const oppositeCandle = candles[oppositeSide];
           const oppositeOpen = opens[oppositeSide];
           const entry = oppositeCandle.close || opposite.ltp;
-          const stop = nextLevelBelow(oppositeOpen, entry);
+          const stop = nextOptionLevelBelow(oppositeOpen, entry);
+          if (stop === undefined || !Number.isFinite(entry) || entry <= stop) continue;
           const target = entry + 2 * (entry - stop);
           opened += Number(await insertPosition({ asset, sourceSide: side, contract: opposite, expiry,
             signalType: 'OPPOSITE_UPPER_T3', signalLevel: formula.upperT3,
