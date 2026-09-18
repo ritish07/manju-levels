@@ -332,6 +332,28 @@ export async function GET(request: NextRequest) {
         { error: 'Unsupported underlying' },
         { status: 400 },
       );
+    const quoteSecurityId = Number(params.get('quoteSecurityId') || 0);
+    if (params.get('quoteOnly') === '1') {
+      if (!Number.isSafeInteger(quoteSecurityId) || quoteSecurityId <= 0)
+        return NextResponse.json({ error: 'Invalid option contract' }, { status: 400 });
+      const segment = asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
+      const response = await dhan('/marketfeed/quote', {
+        [segment]: [quoteSecurityId],
+      });
+      const quote = response.data?.[segment]?.[String(quoteSecurityId)] || {};
+      const ohlc = quote.ohlc || {};
+      return NextResponse.json({
+        connected: true,
+        quoteOnly: true,
+        securityId: quoteSecurityId,
+        open: Number(ohlc.open || 0),
+        high: Number(ohlc.high || 0),
+        low: Number(ohlc.low || 0),
+        close: Number(quote.last_price || 0),
+        previousClose: Number(ohlc.close || 0),
+        updatedAt: new Date().toISOString(),
+      }, { headers: { 'Cache-Control': 'no-store' } });
+    }
     const optionSecurityId = Number(params.get('optionSecurityId') || 0);
     if (params.get('optionsOnly') === '1') {
       if (!Number.isSafeInteger(optionSecurityId) || optionSecurityId <= 0 || wantedStrike <= 0)

@@ -37,6 +37,14 @@ type ChainLeg = {
   previousClose: number;
   securityId: number;
 } | null;
+type OptionQuote = {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  previousClose: number;
+  updatedAt: string;
+};
 type LiveSnapshot = {
   connected: boolean;
   asset?: string;
@@ -973,6 +981,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [levelMode, setLevelMode] = useState<'INTRADAY' | 'WEEKLY'>('WEEKLY');
   const [showSpot, setShowSpot] = useState(true);
   const [levelPopoverStrike, setLevelPopoverStrike] = useState<number | null>(null);
+  const [hoveredOption, setHoveredOption] = useState<{ key: string; securityId: number } | null>(null);
+  const [hoveredQuote, setHoveredQuote] = useState<(OptionQuote & { key: string }) | null>(null);
   const [underlyingTimeframe, setUnderlyingTimeframe] = useState<Timeframe>('5m');
   const [optionTimeframe, setOptionTimeframe] = useState<Timeframe>('5m');
   const [activeChart, setActiveChart] = useState<'UNDERLYING' | 'OPTION'>('OPTION');
@@ -1242,6 +1252,34 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     document.addEventListener('pointerdown', close);
     return () => document.removeEventListener('pointerdown', close);
   }, []);
+  useEffect(() => {
+    if (!hoveredOption) {
+      setHoveredQuote(null);
+      return;
+    }
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      try {
+        const query = new URLSearchParams({
+          asset,
+          quoteOnly: '1',
+          quoteSecurityId: String(hoveredOption.securityId),
+        });
+        const response = await fetch(`/manju/api/dhan/snapshot?${query}`, { cache: 'no-store' });
+        const data = await response.json();
+        if (active && response.ok) setHoveredQuote({ ...data, key: hoveredOption.key });
+      } finally {
+        if (active) timer = setTimeout(load, 3000);
+      }
+    };
+    setHoveredQuote(null);
+    load();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [asset, hoveredOption]);
   return (
     <main className={`app-shell ${darkMode ? 'dark' : ''}`}>
       {symbolSearchOpen && (
@@ -1530,11 +1568,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                     key={strike}
                   >
                     <button
-                      className={
+                      className={`option-price ${
                         selectedStrike === strike && side === 'CE'
                           ? 'selected'
                           : ''
-                      }
+                      }`}
+                      onPointerEnter={() => row.ce && setHoveredOption({ key: `${strike}-CE`, securityId: row.ce.securityId })}
+                      onPointerLeave={() => setHoveredOption((current) => current?.key === `${strike}-CE` ? null : current)}
                       onClick={() => {
                         setSelectedStrike(strike);
                         setSide('CE');
@@ -1548,6 +1588,19 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                         {ceChange >= 0 ? '+' : ''}
                         {ceChange.toFixed(1)}%
                       </small>
+                      {hoveredOption?.key === `${strike}-CE` && (
+                        <span className="option-quote-popover" role="tooltip">
+                          <strong>{meta.short} {strike.toLocaleString('en-IN')} CE</strong>
+                          {hoveredQuote?.key === `${strike}-CE` ? <>
+                            <span>Open <b>{formatPrice(hoveredQuote.open)}</b></span>
+                            <span>High <b className="positive">{formatPrice(hoveredQuote.high)}</b></span>
+                            <span>Low <b className="negative">{formatPrice(hoveredQuote.low)}</b></span>
+                            <span>Current <b>{formatPrice(hoveredQuote.close)}</b></span>
+                            <span>Prev close <b>{formatPrice(hoveredQuote.previousClose)}</b></span>
+                            <em>Live · {new Date(hoveredQuote.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</em>
+                          </> : <em>Loading Dhan quote…</em>}
+                        </span>
+                      )}
                     </button>
                     <button
                       className="strike"
@@ -1571,11 +1624,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       )}
                     </button>
                     <button
-                      className={
+                      className={`option-price ${
                         selectedStrike === strike && side === 'PE'
                           ? 'selected'
                           : ''
-                      }
+                      }`}
+                      onPointerEnter={() => row.pe && setHoveredOption({ key: `${strike}-PE`, securityId: row.pe.securityId })}
+                      onPointerLeave={() => setHoveredOption((current) => current?.key === `${strike}-PE` ? null : current)}
                       onClick={() => {
                         setSelectedStrike(strike);
                         setSide('PE');
@@ -1589,6 +1644,19 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                         {peChange >= 0 ? '+' : ''}
                         {peChange.toFixed(1)}%
                       </small>
+                      {hoveredOption?.key === `${strike}-PE` && (
+                        <span className="option-quote-popover put" role="tooltip">
+                          <strong>{meta.short} {strike.toLocaleString('en-IN')} PE</strong>
+                          {hoveredQuote?.key === `${strike}-PE` ? <>
+                            <span>Open <b>{formatPrice(hoveredQuote.open)}</b></span>
+                            <span>High <b className="positive">{formatPrice(hoveredQuote.high)}</b></span>
+                            <span>Low <b className="negative">{formatPrice(hoveredQuote.low)}</b></span>
+                            <span>Current <b>{formatPrice(hoveredQuote.close)}</b></span>
+                            <span>Prev close <b>{formatPrice(hoveredQuote.previousClose)}</b></span>
+                            <em>Live · {new Date(hoveredQuote.updatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</em>
+                          </> : <em>Loading Dhan quote…</em>}
+                        </span>
+                      )}
                     </button>
                     <button
                       type="button"
