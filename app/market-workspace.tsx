@@ -9,9 +9,10 @@ import {
   ChevronDown,
   Crosshair,
   Layers3,
+  Moon,
   RefreshCw,
   Search,
-  Settings2,
+  Sun,
   X,
   ZoomIn,
   ZoomOut,
@@ -323,6 +324,7 @@ function Chart({
   showCandlePopover = false,
   previousClose = 0,
   onActivate,
+  darkMode,
 }: {
   title: string;
   subtitle: string;
@@ -336,6 +338,7 @@ function Chart({
   showCandlePopover?: boolean;
   previousClose?: number;
   onActivate: () => void;
+  darkMode: boolean;
 }) {
   const priceClipId = `price-plot-${useId().replace(/:/g, '')}`;
   const [zoom, setZoom] = useState(1);
@@ -496,7 +499,6 @@ function Chart({
       <div
         ref={stageRef}
         className="chart-stage"
-        style={{ backgroundColor: '#ffffff' }}
       >
         {showCandlePopover && crossCandle && (
           <div className="candle-hover-popover" role="tooltip">
@@ -509,7 +511,7 @@ function Chart({
           </div>
         )}
         <svg
-          style={{ backgroundColor: '#ffffff' }}
+          style={{ backgroundColor: darkMode ? '#111722' : '#ffffff' }}
           viewBox={`0 0 ${width} ${height}`}
           preserveAspectRatio="none"
           onWheel={onWheel}
@@ -604,7 +606,7 @@ function Chart({
               x2={padL + (i * plotW) / 9}
               y1={0}
               y2={plotH}
-              stroke="#eceff1"
+              stroke={darkMode ? '#273142' : '#eceff1'}
               strokeWidth="1"
             />
           ))}
@@ -615,7 +617,7 @@ function Chart({
               x2={plotW + padL}
               y1={(i * plotH) / 7}
               y2={(i * plotH) / 7}
-              stroke="#eceff1"
+              stroke={darkMode ? '#273142' : '#eceff1'}
               strokeWidth="1"
             />
           ))}
@@ -757,7 +759,7 @@ function Chart({
             x2={plotW + padL}
             y1={timeAxisTop}
             y2={timeAxisTop}
-            stroke="#e2e5e8"
+            stroke={darkMode ? '#344052' : '#e2e5e8'}
             strokeWidth="1"
           />
           {Array.from({ length: xTickCount }, (_, i) => {
@@ -929,6 +931,16 @@ function PositionsView({
 }
 
 export default function Home({ canViewPositions }: { canViewPositions: boolean }) {
+  const [darkMode, setDarkMode] = useState(false);
+  useEffect(() => {
+    const saved = window.localStorage.getItem('manju-theme');
+    setDarkMode(saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }, []);
+  const toggleTheme = () => setDarkMode((current) => {
+    const next = !current;
+    window.localStorage.setItem('manju-theme', next ? 'dark' : 'light');
+    return next;
+  });
   const [tokenInfo, setTokenInfo] = useState<{ready?: boolean; canGenerate?: boolean; expiresAt?: string; error?: string}>({});
   const [generatingToken, setGeneratingToken] = useState(false);
   useEffect(() => {
@@ -1225,7 +1237,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     return () => document.removeEventListener('pointerdown', close);
   }, []);
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${darkMode ? 'dark' : ''}`}>
       {symbolSearchOpen && (
         <div
           className="symbol-modal-backdrop"
@@ -1340,8 +1352,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <BriefcaseBusiness />
             {appView === 'POSITIONS' ? 'Charts' : 'Positions'}
           </button>}
-          <button aria-label="Settings">
-            <Settings2 />
+          <button className="theme-toggle" aria-label={darkMode ? 'Use light mode' : 'Use dark mode'} title={darkMode ? 'Use light mode' : 'Use dark mode'} onClick={toggleTheme}>
+            {darkMode ? <Sun /> : <Moon />}
           </button>
           <div className="avatar">RG</div>
         </div>
@@ -1377,6 +1389,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             onLevelModeChange={selectedStock ? undefined : setLevelMode}
             accent={activeChart === 'UNDERLYING'}
             onActivate={() => setActiveChart('UNDERLYING')}
+            darkMode={darkMode}
           />}
           {showSpot && <ResizeHandle
             onDrag={(delta) =>
@@ -1411,6 +1424,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               previousClose={live?.chain.find((row) => row.strike === selectedStrike)?.[side === 'CE' ? 'ce' : 'pe']?.previousClose || 0}
               accent={activeChart === 'OPTION'}
               onActivate={() => setActiveChart('OPTION')}
+              darkMode={darkMode}
             />
           )}
         </div>
