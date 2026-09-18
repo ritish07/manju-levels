@@ -1131,7 +1131,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           lastFullSnapshot.current = Date.now();
           setLive(data);
         }
-        if (!selectedStrike && data.selectedStrike) setSelectedStrike(data.selectedStrike);
+        // Keep the visible strike synchronized with the exact contract Dhan
+        // returned (important after changing the underlying or expiry).
+        if (data.selectedStrike && data.selectedStrike !== selectedStrike)
+          setSelectedStrike(data.selectedStrike);
         setFeedError('');
         if (data.expiry && data.expiry !== expiry) setExpiry(data.expiry);
       } catch (error) {

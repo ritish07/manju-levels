@@ -242,12 +242,29 @@ async function history(
   return limit ? candles.slice(-180) : candles;
 }
 
-// The first session open is immutable. Always derive it from Dhan's raw
-// one-minute candles for the latest session that actually traded.
+// Prefer Dhan's official live OHLC open. Candle history is only a fallback
+// because a pre-market request can otherwise cache the previous session's
+// first candle as today's option open.
 const optionOpens = new Map<string, number>();
 async function optionDayOpen(spec: { securityId: number; segment: string; instrument: string }) {
   const key = `${tradingDate()}:${spec.segment}:${spec.securityId}`;
   if (optionOpens.has(key)) return optionOpens.get(key)!;
+  let quoteOpen = 0;
+  try {
+    const quoteResponse = await dhan('/marketfeed/ohlc', {
+      [spec.segment]: [spec.securityId],
+    });
+    quoteOpen = Number(
+      quoteResponse.data?.[spec.segment]?.[String(spec.securityId)]?.ohlc?.open || 0,
+    );
+  } catch {
+    // Historical candles remain a safe fallback if the quote endpoint is
+    // temporarily unavailable.
+  }
+  if (quoteOpen > 0) {
+    optionOpens.set(key, quoteOpen);
+    return quoteOpen;
+  }
   let candles = await history(spec, '1m', false, true);
   // On weekends, exchange holidays, or before the first candle arrives, fall
   // back to recent history and use Dhan's latest completed trading session.
@@ -255,7 +272,9 @@ async function optionDayOpen(spec: { securityId: number; segment: string; instru
   const latest = candles.at(-1);
   const sessionDate = latest ? tradingDate(latest.timestamp) : '';
   const open = sessionDate ? tradingDayCandles(candles, sessionDate)[0]?.open || 0 : 0;
-  if (open > 0) optionOpens.set(key, open);
+  // Never cache a previous session under today's key. Once today's first
+  // trade arrives, the next poll will replace this fallback with the live open.
+  if (open > 0 && sessionDate === tradingDate()) optionOpens.set(key, open);
   if (optionOpens.size > 300) for (const cachedKey of optionOpens.keys()) {
     if (!cachedKey.startsWith(`${tradingDate()}:`)) optionOpens.delete(cachedKey);
   }
@@ -409,15 +428,20 @@ export async function GET(request: NextRequest) {
       }))
       .sort((a, b) => a.strike - b.strike);
     const spot = Number(chainResponse.data?.last_price || 0);
-    const targetStrike = wantedStrike || spot;
-    const selected = chain.reduce(
+    const nearestAtm = chain.reduce(
       (best, row) =>
-        Math.abs(row.strike - targetStrike) <
-        Math.abs(best.strike - targetStrike)
+        Math.abs(row.strike - spot) <
+        Math.abs(best.strike - spot)
           ? row
           : best,
       chain[0],
     );
+    // A requested strike must map to that exact Dhan option-chain row. If it
+    // became invalid after an asset/expiry change, fall back to ATM and return
+    // the corrected strike so the UI label and contract can never disagree.
+    const selected = wantedStrike > 0
+      ? chain.find((row) => row.strike === wantedStrike) || nearestAtm
+      : nearestAtm;
     const contract = selected?.[side];
     const [underlyingCandles, optionCandles, open, future] = await Promise.all([
       history(spec, underlyingTimeframe),
