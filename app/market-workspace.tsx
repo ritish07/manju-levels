@@ -1416,7 +1416,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             onClick={() => setShowSpot((value) => !value)}
           >
             <span />
-            Spot
+            Underlying
           </button>
           <button
             className={`levels-toggle ${showLevels ? 'on' : ''}`}
