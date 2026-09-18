@@ -413,6 +413,9 @@ function Chart({
   const up = latest.close >= latest.open;
   const yTickCount = Math.max(6, Math.floor(plotH / 56));
   const xTickCount = Math.max(4, Math.floor(plotW / 105));
+  const visibleLevelYs = levels
+    .map((level) => y(level.value))
+    .filter((levelY) => levelY >= 0 && levelY <= plotH);
   const crossIndex = cross
     ? Math.round((cross.x - padL - slot / 2 - panShift) / slot)
     : -1;
@@ -578,11 +581,11 @@ function Chart({
             if (drag.current?.mode === 'y-scale')
               setYZoom(
                 Math.min(
-                  5,
+                  40,
                   Math.max(
-                    0.55,
+                    0.25,
                     drag.current.yZoom *
-                      Math.exp((drag.current.y - e.clientY) / 220),
+                      Math.exp((drag.current.y - e.clientY) / 180),
                   ),
                 ),
               );
@@ -623,11 +626,13 @@ function Chart({
           ))}
           {Array.from({ length: yTickCount }, (_, i) => {
             const t = i / (yTickCount - 1);
+            const tickY = 22 + t * (plotH - 36);
+            if (visibleLevelYs.some((levelY) => Math.abs(levelY - tickY) < 18)) return null;
             return (
               <text
                 key={i}
                 x={width - padR + 8}
-                y={22 + t * (plotH - 36)}
+                y={tickY}
                 className="axis-label"
               >
                 {formatPrice(max - t * range)}
@@ -636,6 +641,7 @@ function Chart({
           })}
           {levels.map((level) => {
             const levelY = y(level.value);
+            const badgeY = Math.max(11, Math.min(plotH - 11, levelY));
             const isOpenLevel = level.label === 'OPEN';
             return levelY >= 0 && levelY <= plotH ? (
               <g key={`${level.color}-${level.label}-${level.value}`}>
@@ -649,7 +655,7 @@ function Chart({
                 />
                 <text
                   x={plotW - 8}
-                  y={Math.max(12, levelY - 5)}
+                  y={Math.max(13, Math.min(plotH - 4, badgeY - 5))}
                   textAnchor="end"
                   className="target-label"
                   fill={level.color}
@@ -658,7 +664,7 @@ function Chart({
                 </text>
                 <rect
                   x={width - padR - 1}
-                  y={levelY - 10}
+                  y={badgeY - 10}
                   width="80"
                   height="20"
                   rx="3"
@@ -666,7 +672,7 @@ function Chart({
                 />
                 <text
                   x={width - 20}
-                  y={levelY + 4}
+                  y={badgeY + 4}
                   textAnchor="end"
                   className="level-label"
                 >
