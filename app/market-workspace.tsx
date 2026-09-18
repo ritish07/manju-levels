@@ -405,8 +405,8 @@ function Chart({
   if (!candles.length) return <section className="chart-panel"><div className="chart-head">{title}</div><div className="chart-empty">Waiting for Dhan candles</div></section>;
   const width = size.width,
     height = size.height,
-    plotH = height - 118,
     timeAxisTop = height - 42,
+    plotH = timeAxisTop,
     padL = 10,
     padR = width < 430 ? 82 : 94;
   const visibleCount = Math.min(
@@ -418,8 +418,6 @@ function Chart({
   const panCeil = Math.ceil(offset);
   const start = Math.max(0, candles.length - visibleCount - panCeil);
   const view = candles.slice(start, start + visibleCount + 1);
-  const volumeOf = (c: Candle) => Number.isFinite(c.volume) ? Math.max(0, c.volume) : 0;
-  const maxVolume = Math.max(1, ...view.map(volumeOf));
   const vals = candles
     .flatMap((c) => [c.high, c.low])
     .concat(levels.map((level) => level.value));
@@ -733,7 +731,6 @@ function Chart({
             const cx = padL + i * slot + slot / 2 + panShift;
             const green = c.close >= c.open;
             const color = green ? '#089981' : '#f23645';
-            const volumeHeight = (volumeOf(c) / maxVolume) * 54;
             return (
               <g key={start + i}>
                 <g clipPath={`url(#${priceClipId})`}>
@@ -755,14 +752,6 @@ function Chart({
                     strokeWidth="1.2"
                   />
                 </g>
-                <rect
-                  x={cx - body / 2}
-                  y={plotH + 64 - volumeHeight}
-                  width={body}
-                  height={volumeHeight}
-                  fill={green ? '#8bd8ca' : '#ffadb4'}
-                  opacity=".82"
-                />
               </g>
             );
           })}
