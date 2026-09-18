@@ -1,14 +1,16 @@
 import { dhanHeaders, invalidateToken } from './dhan-auth';
 let queue: Promise<unknown> = Promise.resolve();
 let lastChain = 0;
+let lastQuote = 0;
 let chartQueue: Promise<unknown> = Promise.resolve();
 let lastChart = 0;
 const cache = new Map<string, {expires: number; promise: Promise<any>}>();
-export async function dhan(path: string, body: object): Promise<any> {
+export async function dhan(path: string, body: object, cacheMs?: number): Promise<any> {
   const key = path + JSON.stringify(body);
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.promise;
   const isChart = path.startsWith('/charts/');
+  const isQuote = path.startsWith('/marketfeed/');
   const task = (isChart ? chartQueue : queue).catch(() => {}).then(async () => {
     // Chart data has its own budget; option-chain throttling must not block clicks.
     if (isChart) {
@@ -20,6 +22,11 @@ export async function dhan(path: string, body: object): Promise<any> {
       const delay = 3100 - (Date.now() - lastChain);
       if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
       lastChain = Date.now();
+    }
+    if (isQuote) {
+      const delay = 1050 - (Date.now() - lastQuote);
+      if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+      lastQuote = Date.now();
     }
     for (let attempt = 0; attempt < 2; attempt++) {
       const headers = await dhanHeaders();
@@ -38,7 +45,8 @@ export async function dhan(path: string, body: object): Promise<any> {
   });
   if (isChart) chartQueue = task;
   else queue = task;
-  cache.set(key, { expires: Date.now() + (path.includes('charts') ? 15000 : path.includes('expiry') ? 300000 : 5000), promise: task });
+  const ttl = cacheMs ?? (path.includes('charts') ? 15000 : path.includes('expiry') ? 300000 : 5000);
+  if (ttl > 0) cache.set(key, { expires: Date.now() + ttl, promise: task });
   task.catch(() => cache.delete(key));
   if (cache.size > 300) for (const [k,v] of cache) if(v.expires < Date.now()) cache.delete(k);
   return task;

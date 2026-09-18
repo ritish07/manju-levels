@@ -228,6 +228,19 @@ function formatExpiry(value: string) {
   });
 }
 
+function applyLivePrice(candles: Candle[], price: number) {
+  if (!(price > 0) || !candles.length) return candles;
+  const next = candles.slice();
+  const last = next[next.length - 1];
+  next[next.length - 1] = {
+    ...last,
+    high: Math.max(last.high, price),
+    low: Math.min(last.low, price),
+    close: price,
+  };
+  return next;
+}
+
 function targetLabel(step: number) {
   return `T${Number.isInteger(step) ? step : step.toFixed(1)}`;
 }
@@ -1144,6 +1157,69 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       clearTimeout(timer);
     };
   }, [asset, underlyingTimeframe, optionTimeframe, side, selectedStrike, expiry, selectedStock]);
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const loadTick = async () => {
+      try {
+        const current = liveRef.current;
+        const contract = current?.chain.find((row) => row.strike === selectedStrike)
+          ?.[side === 'CE' ? 'ce' : 'pe'];
+        const query = new URLSearchParams({ asset });
+        if (selectedStock)
+          query.set('stockSecurityId', String(selectedStock.securityId));
+        if (contract?.securityId)
+          query.set('optionSecurityId', String(contract.securityId));
+        const response = await fetch(`/manju/api/dhan/ticks?${query}`, {
+          cache: 'no-store',
+        });
+        const tick: {
+          underlyingPrice?: number;
+          optionPrice?: number;
+          optionSecurityId?: number;
+        } = await response.json();
+        if (!active || !response.ok) return;
+        setLive((previous) => {
+          if (!previous) return previous;
+          const selectedLeg = previous.chain.find((row) => row.strike === selectedStrike)
+            ?.[side === 'CE' ? 'ce' : 'pe'];
+          const optionMatches = Boolean(
+            tick.optionSecurityId && selectedLeg?.securityId === tick.optionSecurityId,
+          );
+          return {
+            ...previous,
+            spot: tick.underlyingPrice || previous.spot,
+            underlyingCandles: applyLivePrice(
+              previous.underlyingCandles,
+              tick.underlyingPrice || 0,
+            ),
+            optionCandles: optionMatches
+              ? applyLivePrice(previous.optionCandles, tick.optionPrice || 0)
+              : previous.optionCandles,
+            chain: optionMatches
+              ? previous.chain.map((row) => row.strike === selectedStrike
+                ? {
+                    ...row,
+                    [side === 'CE' ? 'ce' : 'pe']: selectedLeg
+                      ? { ...selectedLeg, ltp: tick.optionPrice || selectedLeg.ltp }
+                      : null,
+                  }
+                : row)
+              : previous.chain,
+          };
+        });
+      } catch {
+        // The slower snapshot request remains the fallback if a live tick is missed.
+      } finally {
+        if (active) timer = setTimeout(loadTick, 1100);
+      }
+    };
+    void loadTick();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [asset, expiry, selectedStock, selectedStrike, side]);
   const mockStrikes = useMemo(
     () => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * meta.step),
     [atm, meta.step],
