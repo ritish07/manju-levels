@@ -1362,16 +1362,16 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         className="workspace"
         style={{
           gridTemplateColumns: showSpot
-            ? `${100 - chainPercent}fr 6px ${chainPercent}fr`
-            : '50fr 6px 50fr',
+            ? `minmax(0, ${100 - chainPercent}fr) 6px minmax(0, ${chainPercent}fr)`
+            : 'minmax(0, 50fr) 6px minmax(0, 50fr)',
         }}
       >
         <div
           className="charts-grid"
           style={{
             gridTemplateColumns: showSpot
-              ? `${chartSplit}fr 6px ${100 - chartSplit}fr`
-              : '1fr',
+              ? `minmax(0, ${chartSplit}fr) 6px minmax(0, ${100 - chartSplit}fr)`
+              : 'minmax(0, 1fr)',
           }}
         >
           {showSpot && <Chart
