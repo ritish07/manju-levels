@@ -35,7 +35,17 @@ export async function GET(request: NextRequest) {
       : {};
     return NextResponse.json({
       underlyingPrice: Number(underlying.last_price || 0),
+      underlyingOhlc: {
+        open: Number(underlying.ohlc?.open || 0),
+        high: Number(underlying.ohlc?.high || 0),
+        low: Number(underlying.ohlc?.low || 0),
+      },
       optionPrice: Number(option.last_price || 0),
+      optionOhlc: {
+        open: Number(option.ohlc?.open || 0),
+        high: Number(option.ohlc?.high || 0),
+        low: Number(option.ohlc?.low || 0),
+      },
       optionSecurityId,
       updatedAt: new Date().toISOString(),
     }, { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } });

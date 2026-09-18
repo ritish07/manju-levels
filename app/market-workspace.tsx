@@ -228,14 +228,44 @@ function formatExpiry(value: string) {
   });
 }
 
-function applyLivePrice(candles: Candle[], price: number) {
+type LiveOhlc = { open?: number; high?: number; low?: number };
+
+function currentDayLabel() {
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+  }).format(new Date());
+}
+
+function applyLivePrice(
+  candles: Candle[],
+  price: number,
+  timeframe: Timeframe,
+  ohlc?: LiveOhlc,
+) {
   if (!(price > 0) || !candles.length) return candles;
   const next = candles.slice();
+  if (timeframe === 'D') {
+    const today = currentDayLabel();
+    if (next[next.length - 1].time !== today) {
+      const open = Number(ohlc?.open) > 0 ? Number(ohlc?.open) : price;
+      next.push({
+        open,
+        high: Number(ohlc?.high) > 0 ? Number(ohlc?.high) : Math.max(open, price),
+        low: Number(ohlc?.low) > 0 ? Number(ohlc?.low) : Math.min(open, price),
+        close: price,
+        volume: 0,
+        time: today,
+      });
+      return next;
+    }
+  }
   const last = next[next.length - 1];
   next[next.length - 1] = {
     ...last,
-    high: Math.max(last.high, price),
-    low: Math.min(last.low, price),
+    high: Math.max(last.high, price, Number(ohlc?.high) || 0),
+    low: Math.min(last.low, price, Number(ohlc?.low) > 0 ? Number(ohlc?.low) : price),
     close: price,
   };
   return next;
@@ -1128,10 +1158,41 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           throw new Error(data.error || 'Dhan feed unavailable');
         if (!active) return;
         if (data.optionsOnly) {
-          setLive((previous) => previous ? { ...previous, ...data } : previous);
+          setLive((previous) => {
+            if (!previous) return previous;
+            const liveDaily = previous.optionCandles.at(-1);
+            const optionCandles = optionTimeframe === 'D' &&
+                liveDaily?.time === currentDayLabel() &&
+                data.optionCandles?.at(-1)?.time !== currentDayLabel()
+              ? [...(data.optionCandles || []), liveDaily]
+              : data.optionCandles;
+            return { ...previous, ...data, optionCandles };
+          });
         } else {
           lastFullSnapshot.current = Date.now();
-          setLive(data);
+          setLive((previous) => {
+            if (!previous) return data;
+            const today = currentDayLabel();
+            const keepLiveDaily = (fresh: Candle[], old: Candle[], timeframe: Timeframe) => {
+              const liveDaily = old.at(-1);
+              return timeframe === 'D' && liveDaily?.time === today && fresh.at(-1)?.time !== today
+                ? [...fresh, liveDaily]
+                : fresh;
+            };
+            return {
+              ...data,
+              underlyingCandles: keepLiveDaily(
+                data.underlyingCandles || [],
+                previous.underlyingCandles || [],
+                underlyingTimeframe,
+              ),
+              optionCandles: keepLiveDaily(
+                data.optionCandles || [],
+                previous.optionCandles || [],
+                optionTimeframe,
+              ),
+            };
+          });
         }
         // Keep the visible strike synchronized with the exact contract Dhan
         // returned (important after changing the underlying or expiry).
@@ -1175,7 +1236,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         });
         const tick: {
           underlyingPrice?: number;
+          underlyingOhlc?: LiveOhlc;
           optionPrice?: number;
+          optionOhlc?: LiveOhlc;
           optionSecurityId?: number;
         } = await response.json();
         if (!active || !response.ok) return;
@@ -1192,9 +1255,16 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             underlyingCandles: applyLivePrice(
               previous.underlyingCandles,
               tick.underlyingPrice || 0,
+              underlyingTimeframe,
+              tick.underlyingOhlc,
             ),
             optionCandles: optionMatches
-              ? applyLivePrice(previous.optionCandles, tick.optionPrice || 0)
+              ? applyLivePrice(
+                  previous.optionCandles,
+                  tick.optionPrice || 0,
+                  optionTimeframe,
+                  tick.optionOhlc,
+                )
               : previous.optionCandles,
             chain: optionMatches
               ? previous.chain.map((row) => row.strike === selectedStrike
@@ -1219,7 +1289,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       active = false;
       clearTimeout(timer);
     };
-  }, [asset, expiry, selectedStock, selectedStrike, side]);
+  }, [asset, expiry, optionTimeframe, selectedStock, selectedStrike, side, underlyingTimeframe]);
   const mockStrikes = useMemo(
     () => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * meta.step),
     [atm, meta.step],
