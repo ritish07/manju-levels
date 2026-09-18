@@ -652,19 +652,22 @@ function Chart({
             />
           ))}
           {oiProfile.length > 0 && (() => {
-            const centerX = Math.max(48, plotW - Math.min(118, plotW * 0.2));
-            const maxBarWidth = Math.max(24, Math.min(88, plotW * 0.13));
+            const axisX = plotW + padL - 4;
+            const maxBarWidth = Math.max(34, Math.min(170, plotW * 0.22));
             return <g className="chart-oi-profile">
-              <line x1={centerX} x2={centerX} y1={0} y2={plotH} />
+              <g className="chart-oi-caption">
+                <rect x="12" y="10" width="106" height="24" rx="4" />
+                <text x="22" y="27">OI PROFILE · {oiProfile.length}</text>
+              </g>
               {oiProfile.map((row) => {
                 const rowY = y(row.strike);
-                if (rowY < 7 || rowY > plotH - 7) return null;
+                if (rowY < 10 || rowY > plotH - 10) return null;
                 const callWidth = Math.max(2, (row.callOi / maxChartOi) * maxBarWidth);
                 const putWidth = Math.max(2, (row.putOi / maxChartOi) * maxBarWidth);
                 return <g key={`oi-${row.strike}`}>
                   <title>{`${row.strike.toLocaleString('en-IN')} · CE OI ${formatOi(row.callOi)} · PE OI ${formatOi(row.putOi)}`}</title>
-                  <rect className="chart-oi-call" x={centerX - callWidth} y={rowY - 6} width={callWidth} height="5" rx="1" />
-                  <rect className="chart-oi-put" x={centerX} y={rowY + 1} width={putWidth} height="5" rx="1" />
+                  <rect className="chart-oi-call" x={axisX - callWidth} y={rowY - 9} width={callWidth} height="8" rx="1" />
+                  <rect className="chart-oi-put" x={axisX - putWidth} y={rowY + 1} width={putWidth} height="8" rx="1" />
                 </g>;
               })}
             </g>;
