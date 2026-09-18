@@ -387,6 +387,21 @@ function Chart({
     observer.observe(stage);
     return () => observer.disconnect();
   }, [candles.length > 0]);
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const containGesture = (event: Event) => event.preventDefault();
+    stage.addEventListener('wheel', containGesture, { passive: false });
+    stage.addEventListener('gesturestart', containGesture, { passive: false });
+    stage.addEventListener('gesturechange', containGesture, { passive: false });
+    stage.addEventListener('gestureend', containGesture, { passive: false });
+    return () => {
+      stage.removeEventListener('wheel', containGesture);
+      stage.removeEventListener('gesturestart', containGesture);
+      stage.removeEventListener('gesturechange', containGesture);
+      stage.removeEventListener('gestureend', containGesture);
+    };
+  }, []);
   if (!candles.length) return <section className="chart-panel"><div className="chart-head">{title}</div><div className="chart-empty">Waiting for Dhan candles</div></section>;
   const width = size.width,
     height = size.height,
