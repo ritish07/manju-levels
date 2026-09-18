@@ -30,6 +30,7 @@ type Candle = {
   time: string;
 };
 type ChartLevel = { value: number; label: string; color: string };
+type ChartOiLevel = { strike: number; callOi: number; putOi: number };
 type ChainLeg = {
   ltp: number;
   oi: number;
@@ -333,6 +334,7 @@ function Chart({
   previousClose = 0,
   onActivate,
   darkMode,
+  oiProfile = [],
 }: {
   title: string;
   subtitle: string;
@@ -347,6 +349,7 @@ function Chart({
   previousClose?: number;
   onActivate: () => void;
   darkMode: boolean;
+  oiProfile?: ChartOiLevel[];
 }) {
   const priceClipId = `price-plot-${useId().replace(/:/g, '')}`;
   const [zoom, setZoom] = useState(1);
@@ -421,6 +424,7 @@ function Chart({
   const up = latest.close >= latest.open;
   const yTickCount = Math.max(6, Math.floor(plotH / 56));
   const xTickCount = Math.max(4, Math.floor(plotW / 105));
+  const maxChartOi = Math.max(1, ...oiProfile.flatMap((row) => [row.callOi, row.putOi]));
   const visibleLevelYs = levels
     .map((level) => y(level.value))
     .filter((levelY) => levelY >= 0 && levelY <= plotH);
@@ -632,6 +636,24 @@ function Chart({
               strokeWidth="1"
             />
           ))}
+          {oiProfile.length > 0 && (() => {
+            const centerX = Math.max(48, plotW - Math.min(118, plotW * 0.2));
+            const maxBarWidth = Math.max(24, Math.min(88, plotW * 0.13));
+            return <g className="chart-oi-profile">
+              <line x1={centerX} x2={centerX} y1={0} y2={plotH} />
+              {oiProfile.map((row) => {
+                const rowY = y(row.strike);
+                if (rowY < 7 || rowY > plotH - 7) return null;
+                const callWidth = Math.max(2, (row.callOi / maxChartOi) * maxBarWidth);
+                const putWidth = Math.max(2, (row.putOi / maxChartOi) * maxBarWidth);
+                return <g key={`oi-${row.strike}`}>
+                  <title>{`${row.strike.toLocaleString('en-IN')} · CE OI ${formatOi(row.callOi)} · PE OI ${formatOi(row.putOi)}`}</title>
+                  <rect className="chart-oi-call" x={centerX - callWidth} y={rowY - 6} width={callWidth} height="5" rx="1" />
+                  <rect className="chart-oi-put" x={centerX} y={rowY + 1} width={putWidth} height="5" rx="1" />
+                </g>;
+              })}
+            </g>;
+          })()}
           {Array.from({ length: yTickCount }, (_, i) => {
             const t = i / (yTickCount - 1);
             const tickY = 22 + t * (plotH - 36);
@@ -799,6 +821,7 @@ function Chart({
       <div className="chart-foot">
         <span>
           <Activity /> Levels active · Formula preview
+          {oiProfile.length > 0 && <small className="chart-oi-legend"><i /> CE OI <i /> PE OI</small>}
         </span>
         <span>Scroll to zoom · Drag to pan</span>
       </div>
@@ -1184,6 +1207,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     1,
     ...oiSeries.flatMap((row) => [row.ce, row.pe]),
   );
+  const underlyingOiProfile: ChartOiLevel[] = chainRows
+    .filter((row) => row.ce || row.pe)
+    .map((row) => ({
+      strike: row.strike,
+      callOi: row.ce?.oi || 0,
+      putOi: row.pe?.oi || 0,
+    }));
   const symbolResults = useMemo(() => {
     const query = symbolSearch.trim().toLowerCase();
     const indices = (Object.keys(ASSETS) as AssetKey[]).map((key) => ({
@@ -1434,6 +1464,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             accent={activeChart === 'UNDERLYING'}
             onActivate={() => setActiveChart('UNDERLYING')}
             darkMode={darkMode}
+            oiProfile={underlyingOiProfile}
           />}
           {showSpot && <ResizeHandle
             onDrag={(delta) =>
