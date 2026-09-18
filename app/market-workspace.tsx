@@ -54,6 +54,8 @@ type LiveSnapshot = {
   optionCandles: Candle[];
   chain: { strike: number; ce: ChainLeg; pe: ChainLeg }[];
   updatedAt: string;
+  underlyingTimeframe?: Timeframe;
+  optionTimeframe?: Timeframe;
 };
 type NseInstrument = {
   securityId: number;
@@ -314,12 +316,26 @@ function Chart({
   candles,
   levels,
   accent = false,
+  timeframe,
+  onTimeframeChange,
+  levelMode,
+  onLevelModeChange,
+  showCandlePopover = false,
+  previousClose = 0,
+  onActivate,
 }: {
   title: string;
   subtitle: string;
   candles: Candle[];
   levels: ChartLevel[];
   accent?: boolean;
+  timeframe: Timeframe;
+  onTimeframeChange: (value: Timeframe) => void;
+  levelMode?: 'INTRADAY' | 'WEEKLY';
+  onLevelModeChange?: (value: 'INTRADAY' | 'WEEKLY') => void;
+  showCandlePopover?: boolean;
+  previousClose?: number;
+  onActivate: () => void;
 }) {
   const priceClipId = `price-plot-${useId().replace(/:/g, '')}`;
   const [zoom, setZoom] = useState(1);
@@ -349,7 +365,7 @@ function Chart({
     if (!stage) return;
     const update = () =>
       setSize({
-        width: Math.max(320, stage.clientWidth),
+        width: Math.max(120, stage.clientWidth),
         height: Math.max(300, stage.clientHeight),
       });
     update();
@@ -363,7 +379,7 @@ function Chart({
     plotH = height - 118,
     timeAxisTop = height - 42,
     padL = 10,
-    padR = 94;
+    padR = width < 430 ? 82 : 94;
   const visibleCount = Math.min(
     candles.length,
     Math.max(24, Math.floor(92 / zoom)),
@@ -407,6 +423,12 @@ function Chart({
     : 0;
   const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pointerX = ((e.clientX - rect.left) / rect.width) * width;
+    if (pointerX >= plotW) {
+      setYOffset((value) => value + (e.deltaY / Math.max(plotH, 1)) * range);
+      return;
+    }
     if (Math.abs(e.deltaX) > Math.abs(e.deltaY))
       setOffset((v) =>
         Math.min(maxOffset, Math.max(minOffset, v + e.deltaX / 12)),
@@ -417,7 +439,7 @@ function Chart({
       );
   };
   return (
-    <section className={`chart-panel ${accent ? 'active-chart' : ''}`}>
+    <section className={`chart-panel ${accent ? 'active-chart' : ''}`} onPointerDownCapture={onActivate}>
       <div className="chart-head">
         <div>
           <div className="chart-title">
@@ -433,6 +455,19 @@ function Chart({
           </div>
         </div>
         <div className="chart-tools">
+          <label className="chart-select">
+            <span>TF</span>
+            <select value={timeframe} onChange={(event) => onTimeframeChange(event.target.value as Timeframe)}>
+              {TIMEFRAMES.map((value) => <option key={value}>{value}</option>)}
+            </select>
+          </label>
+          {levelMode && onLevelModeChange && <label className="chart-select level-basis-select">
+            <span>LEVELS</span>
+            <select value={levelMode} onChange={(event) => onLevelModeChange(event.target.value as 'INTRADAY' | 'WEEKLY')}>
+              <option value="INTRADAY">Intraday</option>
+              <option value="WEEKLY">Weekly</option>
+            </select>
+          </label>}
           <button
             aria-label="Zoom out"
             onClick={() => setZoom((v) => Math.max(0.65, v / 1.25))}
@@ -463,6 +498,16 @@ function Chart({
         className="chart-stage"
         style={{ backgroundColor: '#ffffff' }}
       >
+        {showCandlePopover && crossCandle && (
+          <div className="candle-hover-popover" role="tooltip">
+            <strong>{crossCandle.time}</strong>
+            <span>Open <b>{formatPrice(crossCandle.open)}</b></span>
+            <span>High <b className="positive">{formatPrice(crossCandle.high)}</b></span>
+            <span>Low <b className="negative">{formatPrice(crossCandle.low)}</b></span>
+            <span>Close <b>{formatPrice(crossCandle.close)}</b></span>
+            <span>Prev close <b>{previousClose > 0 ? formatPrice(previousClose) : '—'}</b></span>
+          </div>
+        )}
         <svg
           style={{ backgroundColor: '#ffffff' }}
           viewBox={`0 0 ${width} ${height}`}
@@ -599,7 +644,6 @@ function Chart({
                   y2={levelY}
                   stroke={level.color}
                   strokeWidth={isOpenLevel ? '2' : '1.5'}
-                  strokeDasharray={isOpenLevel ? undefined : '5 4'}
                 />
                 <text
                   x={plotW - 8}
@@ -911,7 +955,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [levelMode, setLevelMode] = useState<'INTRADAY' | 'WEEKLY'>('WEEKLY');
   const [showSpot, setShowSpot] = useState(true);
   const [levelPopoverStrike, setLevelPopoverStrike] = useState<number | null>(null);
-  const [timeframe, setTimeframe] = useState<Timeframe>('5m');
+  const [underlyingTimeframe, setUnderlyingTimeframe] = useState<Timeframe>('5m');
+  const [optionTimeframe, setOptionTimeframe] = useState<Timeframe>('5m');
+  const [activeChart, setActiveChart] = useState<'UNDERLYING' | 'OPTION'>('OPTION');
   const [chainPercent, setChainPercent] = useState(28);
   const [chartSplit, setChartSplit] = useState(50);
   const [live, setLive] = useState<LiveSnapshot | null>(null);
@@ -983,7 +1029,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       try {
         const query = new URLSearchParams({
           asset,
-          timeframe,
+          underlyingTimeframe,
+          optionTimeframe,
           side,
           strike: String(selectedStrike),
         });
@@ -996,7 +1043,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         const contract = existing?.chain.find((row) => row.strike === selectedStrike)?.[side === 'CE' ? 'ce' : 'pe'];
         const matchingFeed = !selectedStock && existing?.asset === asset && existing.expiry === expiry;
         const changedContract = existing?.selectedStrike !== selectedStrike || existing?.side !== side;
-        if (matchingFeed && contract && (changedContract || Date.now() - lastFullSnapshot.current < 20000)) {
+        const underlyingAlreadyCurrent = existing?.underlyingTimeframe === underlyingTimeframe;
+        if (matchingFeed && underlyingAlreadyCurrent && contract && (changedContract || Date.now() - lastFullSnapshot.current < 20000)) {
           query.set('optionsOnly', '1');
           query.set('optionSecurityId', String(contract.securityId));
         }
@@ -1034,14 +1082,14 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       controller.abort();
       clearTimeout(timer);
     };
-  }, [asset, timeframe, side, selectedStrike, expiry, selectedStock]);
+  }, [asset, underlyingTimeframe, optionTimeframe, side, selectedStrike, expiry, selectedStock]);
   const mockStrikes = useMemo(
     () => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * meta.step),
     [atm, meta.step],
   );
   const mockUnderlying = useMemo(
-    () => makeCandles(meta.spot, meta.spot, false, timeframe),
-    [meta, timeframe],
+    () => makeCandles(meta.spot, meta.spot, false, underlyingTimeframe),
+    [meta, underlyingTimeframe],
   );
   const distance = Math.abs(selectedStrike - atm) / meta.step;
   const optionBase = Math.max(
@@ -1058,9 +1106,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         optionBase,
         selectedStrike + (side === 'CE' ? 7 : 19),
         true,
-        timeframe,
+        optionTimeframe,
       ),
-    [optionBase, selectedStrike, side, timeframe],
+    [optionBase, selectedStrike, side, optionTimeframe],
   );
   const underlying = live?.underlyingCandles?.length
     ? live.underlyingCandles
@@ -1087,14 +1135,12 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     ...optionLevels,
     { value: optionOpen, label: 'OPEN', color: '#f28c18' },
   ];
-  const optionLast = optionCandles.at(-1)?.close ?? optionOpen;
-  const immediateSupport = optionLevels
-    .filter((level) => level.value < optionLast)
+  const immediateSupport = underlyingLevels
+    .filter((level) => level.value < currentSpot)
     .sort((a, b) => b.value - a.value)[0];
-  const immediateResistance = optionLevels
-    .filter((level) => level.value > optionLast)
+  const immediateResistance = underlyingLevels
+    .filter((level) => level.value > currentSpot)
     .sort((a, b) => a.value - b.value)[0];
-  const optionContractReady = !live || (live.selectedStrike === selectedStrike && live.side === side);
   const chainRows = live?.chain?.length
     ? live.chain.filter((row) => Math.abs(row.strike - atm) <= meta.step * 6)
     : mockStrikes.map((strike) => ({ strike, ce: null, pe: null }));
@@ -1243,26 +1289,6 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <ChevronDown />
           </button>
         </div>
-        <label className="timeframe-picker">
-          <span>TIMEFRAME</span>
-          <select
-            value={timeframe}
-            onChange={(e) => setTimeframe(e.target.value as Timeframe)}
-          >
-            {TIMEFRAMES.map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
-          <ChevronDown />
-        </label>
-        <label className="timeframe-picker level-mode-picker">
-          <span>LEVEL BASIS</span>
-          <select value={levelMode} onChange={(event) => setLevelMode(event.target.value as 'INTRADAY' | 'WEEKLY')}>
-            <option value="INTRADAY">Intraday</option>
-            <option value="WEEKLY">Weekly</option>
-          </select>
-          <ChevronDown />
-        </label>
         <div className="market-quote">
           <strong>{formatPrice(currentSpot)}</strong>
           <span className={meta.change >= 0 ? 'positive' : 'negative'}>
@@ -1342,9 +1368,15 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                 ? `${selectedStock.symbol} · ${selectedStock.name}`
                 : meta.name
             }
-            subtitle={`${timeframe} · ${selectedStock ? 'NSE' : `NSE · ${levelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(levelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}`}
+            subtitle={`${underlyingTimeframe} · ${selectedStock ? 'NSE' : `NSE · ${levelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(levelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}`}
             candles={underlying}
             levels={showLevels ? underlyingChartLevels : []}
+            timeframe={underlyingTimeframe}
+            onTimeframeChange={setUnderlyingTimeframe}
+            levelMode={selectedStock ? undefined : levelMode}
+            onLevelModeChange={selectedStock ? undefined : setLevelMode}
+            accent={activeChart === 'UNDERLYING'}
+            onActivate={() => setActiveChart('UNDERLYING')}
           />}
           {showSpot && <ResizeHandle
             onDrag={(delta) =>
@@ -1370,10 +1402,15 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           ) : (
             <Chart
               title={`${meta.short} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
-              subtitle={`${timeframe} · NSE F&O`}
+              subtitle={`${optionTimeframe} · NSE F&O`}
               candles={optionCandles}
               levels={showLevels ? optionChartLevels : []}
-              accent
+              timeframe={optionTimeframe}
+              onTimeframeChange={setOptionTimeframe}
+              showCandlePopover
+              previousClose={live?.chain.find((row) => row.strike === selectedStrike)?.[side === 'CE' ? 'ce' : 'pe']?.previousClose || 0}
+              accent={activeChart === 'OPTION'}
+              onActivate={() => setActiveChart('OPTION')}
             />
           )}
         </div>
@@ -1495,25 +1532,21 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                     <button
                       className="strike"
                       data-strike-popover
+                      onPointerEnter={() => setLevelPopoverStrike(strike)}
+                      onPointerLeave={() => setLevelPopoverStrike((current) => current === strike ? null : current)}
                       onClick={() => {
                         setSelectedStrike(strike);
-                        setLevelPopoverStrike((current) => current === strike ? null : strike);
+                        setLevelPopoverStrike(strike);
                       }}
                     >
                       {strike.toLocaleString('en-IN')}
                       {isAtm && <small>ATM</small>}
                       {levelPopoverStrike === strike && (
                         <span className="strike-popover" onPointerDown={(event) => event.stopPropagation()}>
-                          <span className="strike-popover-title">{meta.short} {strike.toLocaleString('en-IN')} {side}</span>
-                          {!optionContractReady ? (
-                            <span className="strike-popover-loading">Updating contract…</span>
-                          ) : (
-                            <>
-                              <span className="strike-level resistance"><small>Immediate resistance</small><b>{immediateResistance ? `${immediateResistance.label} · ${formatPrice(immediateResistance.value)}` : '—'}</b></span>
-                              <span className="strike-level current"><small>Current option price</small><b>{formatPrice(optionLast)}</b></span>
-                              <span className="strike-level support"><small>Immediate support</small><b>{immediateSupport ? `${immediateSupport.label} · ${formatPrice(immediateSupport.value)}` : '—'}</b></span>
-                            </>
-                          )}
+                          <span className="strike-popover-title">{meta.short} · Underlying levels</span>
+                          <span className="strike-level resistance"><small>Immediate resistance</small><b>{immediateResistance ? `${immediateResistance.label} · ${formatPrice(immediateResistance.value)}` : '—'}</b></span>
+                          <span className="strike-level current"><small>Underlying spot</small><b>{formatPrice(currentSpot)}</b></span>
+                          <span className="strike-level support"><small>Immediate support</small><b>{immediateSupport ? `${immediateSupport.label} · ${formatPrice(immediateSupport.value)}` : '—'}</b></span>
                         </span>
                       )}
                     </button>
@@ -1602,7 +1635,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           {appView === 'MARKET' ? <>
             <Crosshair /> Crosshair <span className="divider" />
             <Layers3 /> Formula levels <span className="divider" />
-            <BarChart3 /> {timeframe}
+            <BarChart3 /> {activeChart === 'UNDERLYING' ? underlyingTimeframe : optionTimeframe}
           </> : <>
             <BriefcaseBusiness /> ₹1,00,000 demo capital <span className="divider" />
             Strategy pending

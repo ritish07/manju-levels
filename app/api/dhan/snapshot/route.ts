@@ -242,13 +242,19 @@ async function history(
   return limit ? candles.slice(-180) : candles;
 }
 
-// The first session open is immutable. Never derive it from a truncated chart window.
+// The first session open is immutable. Always derive it from Dhan's raw
+// one-minute candles for the latest session that actually traded.
 const optionOpens = new Map<string, number>();
 async function optionDayOpen(spec: { securityId: number; segment: string; instrument: string }) {
   const key = `${tradingDate()}:${spec.segment}:${spec.securityId}`;
   if (optionOpens.has(key)) return optionOpens.get(key)!;
-  const candles = await history(spec, '1m', false, true);
-  const open = tradingDayCandles(candles)[0]?.open || 0;
+  let candles = await history(spec, '1m', false, true);
+  // On weekends, exchange holidays, or before the first candle arrives, fall
+  // back to recent history and use Dhan's latest completed trading session.
+  if (!candles.length) candles = await history(spec, '1m', false, false);
+  const latest = candles.at(-1);
+  const sessionDate = latest ? tradingDate(latest.timestamp) : '';
+  const open = sessionDate ? tradingDayCandles(candles, sessionDate)[0]?.open || 0 : 0;
   if (open > 0) optionOpens.set(key, open);
   if (optionOpens.size > 300) for (const cachedKey of optionOpens.keys()) {
     if (!cachedKey.startsWith(`${tradingDate()}:`)) optionOpens.delete(cachedKey);
@@ -285,7 +291,8 @@ export async function GET(request: NextRequest) {
   try {
     const params = request.nextUrl.searchParams;
     const asset = (params.get('asset') || 'NIFTY') as Asset;
-    const timeframe = params.get('timeframe') || '5m';
+    const underlyingTimeframe = params.get('underlyingTimeframe') || params.get('timeframe') || '5m';
+    const optionTimeframe = params.get('optionTimeframe') || params.get('timeframe') || '5m';
     const side = params.get('side') === 'PE' ? 'pe' : 'ce';
     const wantedStrike = Number(params.get('strike') || 0);
     const stockSecurityId = Number(params.get('securityId') || 0);
@@ -296,7 +303,7 @@ export async function GET(request: NextRequest) {
           segment: 'NSE_EQ',
           instrument: 'EQUITY',
         },
-        timeframe,
+        underlyingTimeframe,
       );
       const spot = underlyingCandles.at(-1)?.close || 0;
       return NextResponse.json(
@@ -332,11 +339,11 @@ export async function GET(request: NextRequest) {
       const optionSpec = { securityId: optionSecurityId,
         segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO', instrument: 'OPTIDX' };
       const [optionCandles, open] = await Promise.all([
-        history(optionSpec, timeframe), optionDayOpen(optionSpec),
+        history(optionSpec, optionTimeframe), optionDayOpen(optionSpec),
       ]);
       return NextResponse.json({ connected: true, optionsOnly: true, asset,
         selectedStrike: wantedStrike, side: side.toUpperCase(), optionCandles,
-        optionDayOpen: open, updatedAt: new Date().toISOString() },
+        optionDayOpen: open, optionTimeframe, updatedAt: new Date().toISOString() },
         { headers: { 'Cache-Control': 'no-store' } });
     }
     const expiryResponse = await dhan('/optionchain/expirylist', {
@@ -391,7 +398,7 @@ export async function GET(request: NextRequest) {
     );
     const contract = selected?.[side];
     const [underlyingCandles, optionCandles, open, future] = await Promise.all([
-      history(spec, timeframe),
+      history(spec, underlyingTimeframe),
       contract
         ? history(
             {
@@ -399,7 +406,7 @@ export async function GET(request: NextRequest) {
               segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO',
               instrument: 'OPTIDX',
             },
-            timeframe,
+            optionTimeframe,
           )
         : Promise.resolve([]),
       contract
@@ -428,6 +435,8 @@ export async function GET(request: NextRequest) {
         underlyingCandles,
         optionCandles,
         optionDayOpen: open,
+        underlyingTimeframe,
+        optionTimeframe,
         updatedAt: new Date().toISOString(),
       },
       { headers: { 'Cache-Control': 'no-store' } },
