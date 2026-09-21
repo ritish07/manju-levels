@@ -505,6 +505,10 @@ function Chart({
   const body = Math.max(2.5, Math.min(8, slot * 0.58));
   const latest = candles[candles.length - 1];
   const up = latest.close >= latest.open;
+  const priceChange = previousClose > 0 ? latest.close - previousClose : 0;
+  const priceChangePercent = previousClose > 0
+    ? (priceChange / previousClose) * 100
+    : 0;
   const yTickCount = Math.max(6, Math.floor(plotH / 56));
   const xTickCount = Math.max(4, Math.floor(plotW / 105));
   const maxChartOi = Math.max(1, ...oiProfile.flatMap((row) => [row.callOi, row.putOi]));
@@ -547,13 +551,25 @@ function Chart({
             <span className="symbol-mark">{title.slice(0, 1)}</span>
             {title}
           </div>
-          <div className="chart-sub">
-            {subtitle}{' '}
-            <span className={up ? 'positive' : 'negative'}>
-              O {formatPrice(latest.open)} H {formatPrice(latest.high)} L{' '}
-              {formatPrice(latest.low)} C {formatPrice(latest.close)}
-            </span>
-          </div>
+          {showCandlePopover ? (
+            <div className="chart-sub option-premium-summary">
+              <strong>{formatPrice(latest.close)}</strong>
+              {previousClose > 0 && (
+                <span className={priceChange >= 0 ? 'positive' : 'negative'}>
+                  {priceChange >= 0 ? '+' : ''}{formatPrice(priceChange)} ({priceChange >= 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%) {priceChange >= 0 ? '↗' : '↘'}
+                </span>
+              )}
+              <small>{subtitle}</small>
+            </div>
+          ) : (
+            <div className="chart-sub">
+              {subtitle}{' '}
+              <span className={up ? 'positive' : 'negative'}>
+                O {formatPrice(latest.open)} H {formatPrice(latest.high)} L{' '}
+                {formatPrice(latest.low)} C {formatPrice(latest.close)}
+              </span>
+            </div>
+          )}
         </div>
         <div className="chart-tools">
           <label className="chart-select">
