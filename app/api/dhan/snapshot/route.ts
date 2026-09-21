@@ -286,12 +286,9 @@ function findWeeklyOpen(candles: Candle[], fallback: number) {
   const day = monday.getDay();
   monday.setDate(monday.getDate() - ((day + 6) % 7));
   const mondayText = istDate(monday);
-  return (
-    candles.find((c) => istDate(new Date(c.timestamp * 1000)) === mondayText)
-      ?.open ||
-    candles[0]?.open ||
-    fallback
-  );
+  return candles.find(
+    (c) => istDate(new Date(c.timestamp * 1000)) >= mondayText,
+  )?.open || fallback || candles.at(-1)?.open || 0;
 }
 
 function findDayOpen(candles: Candle[], fallback: number) {
@@ -306,6 +303,17 @@ function findDayOpen(candles: Candle[], fallback: number) {
   );
 }
 
+async function marketOhlc(spec: { securityId: number; segment: string }) {
+  try {
+    const response = await dhan('/marketfeed/ohlc', {
+      [spec.segment]: [spec.securityId],
+    });
+    return response.data?.[spec.segment]?.[String(spec.securityId)]?.ohlc || {};
+  } catch {
+    return {};
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const params = request.nextUrl.searchParams;
@@ -316,14 +324,18 @@ export async function GET(request: NextRequest) {
     const wantedStrike = Number(params.get('strike') || 0);
     const stockSecurityId = Number(params.get('securityId') || 0);
     if (stockSecurityId > 0) {
-      const underlyingCandles = await history(
-        {
-          securityId: stockSecurityId,
-          segment: 'NSE_EQ',
-          instrument: 'EQUITY',
-        },
-        underlyingTimeframe,
-      );
+      const stockSegment = params.get('segment') || 'NSE_EQ';
+      const stockInstrument = params.get('instrument') || 'EQUITY';
+      const stockSpec = {
+        securityId: stockSecurityId,
+        segment: stockSegment,
+        instrument: stockInstrument,
+      };
+      const [underlyingCandles, dailyCandles, quoteOhlc] = await Promise.all([
+        history(stockSpec, underlyingTimeframe),
+        history(stockSpec, 'D'),
+        marketOhlc(stockSpec),
+      ]);
       const spot = underlyingCandles.at(-1)?.close || 0;
       return NextResponse.json(
         {
@@ -333,8 +345,8 @@ export async function GET(request: NextRequest) {
           spot,
           expiry: '',
           expiries: [],
-          weeklyOpen: findWeeklyOpen(underlyingCandles, spot),
-          dayOpen: findDayOpen(underlyingCandles, spot),
+          weeklyOpen: findWeeklyOpen(dailyCandles, Number(quoteOhlc.open || 0) || spot),
+          dayOpen: Number(quoteOhlc.open || 0) || findDayOpen(dailyCandles, spot),
           chain: [],
           selectedStrike: 0,
           side: '',
@@ -443,7 +455,7 @@ export async function GET(request: NextRequest) {
       ? chain.find((row) => row.strike === wantedStrike) || nearestAtm
       : nearestAtm;
     const contract = selected?.[side];
-    const [underlyingCandles, optionCandles, open, future] = await Promise.all([
+    const [underlyingCandles, optionCandles, open, future, dailyCandles, quoteOhlc] = await Promise.all([
       history(spec, underlyingTimeframe),
       contract
         ? history(
@@ -460,9 +472,11 @@ export async function GET(request: NextRequest) {
             segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO', instrument: 'OPTIDX' })
         : Promise.resolve(0),
       indexFutureQuote(asset),
+      history(spec, 'D'),
+      marketOhlc(spec),
     ]);
-    const weeklyOpen = findWeeklyOpen(underlyingCandles, spot);
-    const dayOpen = findDayOpen(underlyingCandles, spot);
+    const weeklyOpen = findWeeklyOpen(dailyCandles, Number(quoteOhlc.open || 0) || spot);
+    const dayOpen = Number(quoteOhlc.open || 0) || findDayOpen(dailyCandles, spot);
     return NextResponse.json(
       {
         connected: true,

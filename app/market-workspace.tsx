@@ -71,8 +71,10 @@ type NseInstrument = {
   securityId: number;
   symbol: string;
   name: string;
-  segment: 'NSE_EQ';
-  instrument: 'EQUITY';
+  exchange: 'NSE' | 'BSE';
+  segment: 'NSE_EQ' | 'IDX_I';
+  instrument: 'EQUITY' | 'INDEX';
+  kind: 'STOCK' | 'INDEX';
 };
 type PaperMode = 'FORWARD' | 'BACKTEST';
 type PaperPosition = {
@@ -262,13 +264,38 @@ function applyLivePrice(
     }
   }
   const last = next[next.length - 1];
+  const dayHigh = timeframe === 'D' ? Number(ohlc?.high) || 0 : 0;
+  const dayLow = timeframe === 'D' && Number(ohlc?.low) > 0 ? Number(ohlc?.low) : price;
   next[next.length - 1] = {
     ...last,
-    high: Math.max(last.high, price, Number(ohlc?.high) || 0),
-    low: Math.min(last.low, price, Number(ohlc?.low) > 0 ? Number(ohlc?.low) : price),
+    high: Math.max(last.high, price, dayHigh),
+    low: Math.min(last.low, price, dayLow),
     close: price,
   };
   return next;
+}
+
+function mergeSnapshotCandles(
+  fresh: Candle[],
+  current: Candle[],
+  timeframe: Timeframe,
+) {
+  const live = current.at(-1);
+  if (!live) return fresh;
+  const freshLast = fresh.at(-1);
+  if (timeframe === 'D' && live.time === currentDayLabel() && freshLast?.time !== live.time)
+    return [...fresh, live];
+  if (!freshLast || freshLast.time !== live.time) return fresh;
+  return [
+    ...fresh.slice(0, -1),
+    {
+      ...freshLast,
+      high: Math.max(freshLast.high, live.high),
+      low: Math.min(freshLast.low, live.low),
+      close: live.close,
+      volume: Math.max(freshLast.volume, live.volume),
+    },
+  ];
 }
 
 function targetLabel(step: number) {
@@ -798,6 +825,37 @@ function Chart({
               </g>
             );
           })}
+          {(() => {
+            const priceY = Math.max(11, Math.min(plotH - 11, y(latest.close)));
+            const priceColor = up ? '#089981' : '#f23645';
+            return <g className="live-price-marker">
+              <line
+                x1={0}
+                x2={plotW}
+                y1={priceY}
+                y2={priceY}
+                stroke={priceColor}
+                strokeWidth="1"
+                strokeDasharray="3 3"
+              />
+              <rect
+                x={width - padR - 1}
+                y={priceY - 10}
+                width="80"
+                height="20"
+                rx="3"
+                fill={priceColor}
+              />
+              <text
+                x={width - 20}
+                y={priceY + 4}
+                textAnchor="end"
+                className="level-label"
+              >
+                {formatPrice(latest.close)}
+              </text>
+            </g>;
+          })()}
           {cross && cross.x < plotW && cross.y >= 0 && cross.y < plotH && (
             <g className="crosshair">
               <line x1={crossX} x2={crossX} y1={0} y2={timeAxisTop} />
@@ -1079,7 +1137,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   useEffect(() => {
     fetch('/manju/api/dhan/instruments')
       .then((response) => response.json())
-      .then((data: any) => setInstruments(data.instruments || []))
+      .then((data: any) => setInstruments([
+        ...(data.indices || []),
+        ...(data.instruments || []),
+      ]))
       .catch(() => setInstruments([]));
   }, []);
   useEffect(() => {
@@ -1138,6 +1199,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (selectedStock) {
           query.set('securityId', String(selectedStock.securityId));
           query.set('symbol', selectedStock.symbol);
+          query.set('segment', selectedStock.segment);
+          query.set('instrument', selectedStock.instrument);
         }
         if (expiry) query.set('expiry', expiry);
         const existing = liveRef.current;
@@ -1160,33 +1223,25 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (data.optionsOnly) {
           setLive((previous) => {
             if (!previous) return previous;
-            const liveDaily = previous.optionCandles.at(-1);
-            const optionCandles = optionTimeframe === 'D' &&
-                liveDaily?.time === currentDayLabel() &&
-                data.optionCandles?.at(-1)?.time !== currentDayLabel()
-              ? [...(data.optionCandles || []), liveDaily]
-              : data.optionCandles;
+            const optionCandles = mergeSnapshotCandles(
+              data.optionCandles || [],
+              previous.optionCandles || [],
+              optionTimeframe,
+            );
             return { ...previous, ...data, optionCandles };
           });
         } else {
           lastFullSnapshot.current = Date.now();
           setLive((previous) => {
             if (!previous) return data;
-            const today = currentDayLabel();
-            const keepLiveDaily = (fresh: Candle[], old: Candle[], timeframe: Timeframe) => {
-              const liveDaily = old.at(-1);
-              return timeframe === 'D' && liveDaily?.time === today && fresh.at(-1)?.time !== today
-                ? [...fresh, liveDaily]
-                : fresh;
-            };
             return {
               ...data,
-              underlyingCandles: keepLiveDaily(
+              underlyingCandles: mergeSnapshotCandles(
                 data.underlyingCandles || [],
                 previous.underlyingCandles || [],
                 underlyingTimeframe,
               ),
-              optionCandles: keepLiveDaily(
+              optionCandles: mergeSnapshotCandles(
                 data.optionCandles || [],
                 previous.optionCandles || [],
                 optionTimeframe,
@@ -1227,8 +1282,17 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         const contract = current?.chain.find((row) => row.strike === selectedStrike)
           ?.[side === 'CE' ? 'ce' : 'pe'];
         const query = new URLSearchParams({ asset });
-        if (selectedStock)
+        if (selectedStock) {
           query.set('stockSecurityId', String(selectedStock.securityId));
+          query.set('stockSegment', selectedStock.segment);
+        }
+        const strikeStep = ASSETS[asset].step;
+        const visibleOptionIds = current?.chain
+          .filter((row) => Math.abs(row.strike - Math.round((current.spot || 0) / strikeStep) * strikeStep) <= strikeStep * 6)
+          .flatMap((row) => [row.ce?.securityId, row.pe?.securityId])
+          .filter((value): value is number => Boolean(value)) || [];
+        if (visibleOptionIds.length)
+          query.set('optionSecurityIds', visibleOptionIds.join(','));
         if (contract?.securityId)
           query.set('optionSecurityId', String(contract.securityId));
         const response = await fetch(`/manju/api/dhan/ticks?${query}`, {
@@ -1238,6 +1302,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           underlyingPrice?: number;
           underlyingOhlc?: LiveOhlc;
           optionPrice?: number;
+          optionPrices?: Record<string, number>;
           optionOhlc?: LiveOhlc;
           optionSecurityId?: number;
         } = await response.json();
@@ -1266,16 +1331,15 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                   tick.optionOhlc,
                 )
               : previous.optionCandles,
-            chain: optionMatches
-              ? previous.chain.map((row) => row.strike === selectedStrike
-                ? {
-                    ...row,
-                    [side === 'CE' ? 'ce' : 'pe']: selectedLeg
-                      ? { ...selectedLeg, ltp: tick.optionPrice || selectedLeg.ltp }
-                      : null,
-                  }
-                : row)
-              : previous.chain,
+            chain: previous.chain.map((row) => ({
+              ...row,
+              ce: row.ce
+                ? { ...row.ce, ltp: tick.optionPrices?.[String(row.ce.securityId)] || row.ce.ltp }
+                : null,
+              pe: row.pe
+                ? { ...row.pe, ltp: tick.optionPrices?.[String(row.pe.securityId)] || row.pe.ltp }
+                : null,
+            })),
           };
         });
       } catch {
@@ -1342,12 +1406,6 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     ...optionLevels,
     { value: optionOpen, label: 'OPEN', color: '#f28c18' },
   ];
-  const immediateSupport = underlyingLevels
-    .filter((level) => level.value < currentSpot)
-    .sort((a, b) => b.value - a.value)[0];
-  const immediateResistance = underlyingLevels
-    .filter((level) => level.value > currentSpot)
-    .sort((a, b) => a.value - b.value)[0];
   const chainRows = live?.chain?.length
     ? live.chain.filter((row) => Math.abs(row.strike - atm) <= meta.step * 6)
     : mockStrikes.map((strike) => ({ strike, ce: null, pe: null }));
@@ -1379,22 +1437,34 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       name: ASSETS[key].name,
       exchange: key === 'SENSEX' ? 'BSE' : 'NSE',
     }));
-    const stocks = instruments.map((item) => ({
+    const additionalIndices = instruments
+      .filter((item) => item.kind === 'INDEX')
+      .filter((item) => !indices.some((index) =>
+        index.name.toLowerCase() === item.name.toLowerCase() ||
+        index.symbol.toLowerCase() === item.symbol.toLowerCase(),
+      ))
+      .map((item) => ({
+        kind: 'INDICES' as const,
+        value: `${item.symbol} — ${item.name}`,
+        symbol: item.symbol,
+        name: item.name,
+        exchange: item.exchange,
+      }));
+    const stocks = instruments.filter((item) => item.kind === 'STOCK').map((item) => ({
       kind: 'STOCKS' as const,
       value: `${item.symbol} — ${item.name}`,
       symbol: item.symbol,
       name: item.name,
-      exchange: 'NSE',
+      exchange: item.exchange,
     }));
-    return [...indices, ...stocks]
+    return [...indices, ...additionalIndices, ...stocks]
       .filter((item) => symbolFilter === 'ALL' || item.kind === symbolFilter)
       .filter(
         (item) =>
           !query ||
           item.symbol.toLowerCase().includes(query) ||
           item.name.toLowerCase().includes(query),
-      )
-      .slice(0, 80);
+      );
   }, [instruments, symbolFilter, symbolSearch]);
   const chooseAsset = (value: AssetKey) => {
     setSelectedStock(null);
@@ -1749,6 +1819,12 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                 const ceOiChange = oi.ce - oi.cePrevious;
                 const peOiChange = oi.pe - oi.pePrevious;
                 const isAtm = strike === atm;
+                const strikeSupport = underlyingLevels
+                  .filter((level) => level.value < strike)
+                  .sort((a, b) => b.value - a.value)[0];
+                const strikeResistance = underlyingLevels
+                  .filter((level) => level.value > strike)
+                  .sort((a, b) => a.value - b.value)[0];
                 return (
                   <div
                     className={`chain-row ${isAtm ? 'atm' : ''}`}
@@ -1804,9 +1880,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       {levelPopoverStrike === strike && (
                         <span className="strike-popover" onPointerDown={(event) => event.stopPropagation()}>
                           <span className="strike-popover-title">{meta.short} · Underlying levels</span>
-                          <span className="strike-level resistance"><small>Immediate resistance</small><b>{immediateResistance ? `${immediateResistance.label} · ${formatPrice(immediateResistance.value)}` : '—'}</b></span>
-                          <span className="strike-level current"><small>Underlying spot</small><b>{formatPrice(currentSpot)}</b></span>
-                          <span className="strike-level support"><small>Immediate support</small><b>{immediateSupport ? `${immediateSupport.label} · ${formatPrice(immediateSupport.value)}` : '—'}</b></span>
+                          <span className="strike-level resistance"><small>Immediate resistance</small><b>{strikeResistance ? `${strikeResistance.label} · ${formatPrice(strikeResistance.value)}` : '—'}</b></span>
+                          <span className="strike-level current"><small>Underlying spot</small><b>{formatPrice(strike)}</b></span>
+                          <span className="strike-level support"><small>Immediate support</small><b>{strikeSupport ? `${strikeSupport.label} · ${formatPrice(strikeSupport.value)}` : '—'}</b></span>
                         </span>
                       )}
                     </button>

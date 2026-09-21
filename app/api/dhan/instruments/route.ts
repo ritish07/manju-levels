@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 const MASTER_URL = 'https://images.dhan.co/api-data/api-scrip-master.csv';
-let cache: { expires: number; instruments: object[] } | null = null;
+let cache: { expires: number; instruments: object[]; indices: object[] } | null = null;
 
 function parseCsvLine(line: string) {
   const fields: string[] = [];
@@ -26,7 +26,7 @@ function parseCsvLine(line: string) {
 export async function GET() {
   try {
     if (cache && cache.expires > Date.now())
-      return NextResponse.json({ instruments: cache.instruments });
+      return NextResponse.json({ instruments: cache.instruments, indices: cache.indices });
     const response = await fetch(MASTER_URL, {
       cf: { cacheTtl: 21600 },
     } as RequestInit);
@@ -55,11 +55,35 @@ export async function GET() {
           row[index.SEM_TRADING_SYMBOL],
         segment: 'NSE_EQ',
         instrument: 'EQUITY',
+        exchange: 'NSE',
+        kind: 'STOCK',
       }))
       .sort((a, b) => a.symbol.localeCompare(b.symbol));
-    cache = { expires: Date.now() + 21600000, instruments };
+    const indices = lines
+      .slice(1)
+      .map(parseCsvLine)
+      .filter((row) =>
+        ['NSE', 'BSE'].includes(row[index.SEM_EXM_EXCH_ID]) &&
+        row[index.SEM_SEGMENT] === 'I' &&
+        row[index.SEM_INSTRUMENT_NAME] === 'INDEX' &&
+        Number(row[index.SEM_SMST_SECURITY_ID]) > 0,
+      )
+      .map((row) => ({
+        securityId: Number(row[index.SEM_SMST_SECURITY_ID]),
+        symbol: row[index.SEM_TRADING_SYMBOL],
+        name:
+          row[index.SEM_CUSTOM_SYMBOL] ||
+          row[index.SM_SYMBOL_NAME] ||
+          row[index.SEM_TRADING_SYMBOL],
+        segment: 'IDX_I',
+        instrument: 'INDEX',
+        exchange: row[index.SEM_EXM_EXCH_ID],
+        kind: 'INDEX',
+      }))
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
+    cache = { expires: Date.now() + 21600000, instruments, indices };
     return NextResponse.json(
-      { instruments },
+      { instruments, indices },
       { headers: { 'Cache-Control': 'public, max-age=3600' } },
     );
   } catch (error) {
