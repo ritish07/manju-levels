@@ -22,6 +22,7 @@ type AssetKey = 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
 type Side = 'CE' | 'PE';
 type Timeframe = '1m' | '3m' | '5m' | '15m' | '30m' | '1H' | '4H' | 'D' | 'M';
 type Candle = {
+  timestamp?: number;
   open: number;
   high: number;
   low: number;
@@ -240,6 +241,42 @@ function currentDayLabel() {
   }).format(new Date());
 }
 
+function currentSessionBucket(timeframe: Timeframe) {
+  if (timeframe === 'D' || timeframe === 'M') return null;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date()).map((part) => [part.type, part.value]),
+  );
+  const elapsedMinutes =
+    Number(parts.hour) * 60 + Number(parts.minute) - (9 * 60 + 15);
+  if (elapsedMinutes < 0 || elapsedMinutes >= 375) return null;
+  const interval = INTERVAL_MINUTES[timeframe];
+  const sessionStart = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    3,
+    45,
+  ) / 1000;
+  return sessionStart + Math.floor(elapsedMinutes / interval) * interval * 60;
+}
+
+function intradayTimeLabel(timestamp: number) {
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(timestamp * 1000));
+}
+
 function applyLivePrice(
   candles: Candle[],
   price: number,
@@ -253,6 +290,7 @@ function applyLivePrice(
     if (next[next.length - 1].time !== today) {
       const open = Number(ohlc?.open) > 0 ? Number(ohlc?.open) : price;
       next.push({
+        timestamp: Date.now() / 1000,
         open,
         high: Number(ohlc?.high) > 0 ? Number(ohlc?.high) : Math.max(open, price),
         low: Number(ohlc?.low) > 0 ? Number(ohlc?.low) : Math.min(open, price),
@@ -263,6 +301,21 @@ function applyLivePrice(
       return next;
     }
   }
+  const bucket = currentSessionBucket(timeframe);
+  const lastBeforeUpdate = next[next.length - 1];
+  if (bucket && lastBeforeUpdate.timestamp && lastBeforeUpdate.timestamp < bucket) {
+    next.push({
+      timestamp: bucket,
+      open: price,
+      high: price,
+      low: price,
+      close: price,
+      volume: 0,
+      time: intradayTimeLabel(bucket),
+    });
+    return next;
+  }
+  if (timeframe !== 'D' && timeframe !== 'M' && !bucket) return candles;
   const last = next[next.length - 1];
   const dayHigh = timeframe === 'D' ? Number(ohlc?.high) || 0 : 0;
   const dayLow = timeframe === 'D' && Number(ohlc?.low) > 0 ? Number(ohlc?.low) : price;
@@ -283,9 +336,17 @@ function mergeSnapshotCandles(
   const live = current.at(-1);
   if (!live) return fresh;
   const freshLast = fresh.at(-1);
-  if (timeframe === 'D' && live.time === currentDayLabel() && freshLast?.time !== live.time)
-    return [...fresh, live];
-  if (!freshLast || freshLast.time !== live.time) return fresh;
+  let sameCandle = false;
+  if (timeframe === 'D') {
+    sameCandle = Boolean(freshLast && live.time === freshLast.time);
+    if (live.time === currentDayLabel() && !sameCandle) return [...fresh, live];
+  } else if (live.timestamp && freshLast?.timestamp) {
+    if (freshLast.timestamp < live.timestamp) return [...fresh, live];
+    sameCandle = live.timestamp === freshLast.timestamp;
+  } else {
+    sameCandle = Boolean(freshLast && live.time === freshLast.time);
+  }
+  if (!freshLast || !sameCandle) return fresh;
   return [
     ...fresh.slice(0, -1),
     {
