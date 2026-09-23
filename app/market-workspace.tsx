@@ -288,6 +288,23 @@ function intradayTimeLabel(timestamp: number) {
   }).format(new Date(timestamp * 1000));
 }
 
+function fullCandleTimeLabel(candle: Candle) {
+  if (!candle.timestamp) return candle.time;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      weekday: 'short',
+      day: '2-digit',
+      month: 'short',
+      year: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date(candle.timestamp * 1000)).map((part) => [part.type, part.value]),
+  );
+  return `${parts.weekday} ${parts.day} ${parts.month} '${parts.year} ${parts.hour}:${parts.minute}`;
+}
+
 function applyLivePrice(
   candles: Candle[],
   price: number,
@@ -632,6 +649,14 @@ function Chart({
     : displayedCrossCandle
       ? y(displayedCrossCandle.close)
       : 0;
+  const crossTimeLabel = displayedCrossCandle
+    ? fullCandleTimeLabel(displayedCrossCandle)
+    : '';
+  const crossTimeWidth = Math.max(64, Math.min(154, plotW - 4));
+  const crossTimeLeft = Math.max(
+    2,
+    Math.min(plotW - crossTimeWidth - 2, crossX - crossTimeWidth / 2),
+  );
   const crossPrice = cross
     ? max - ((cross.y - 18) / Math.max(plotH - 36, 1)) * range
     : displayedCrossCandle?.close || 0;
@@ -820,7 +845,7 @@ function Chart({
         </div>
         {showCandlePopover && displayedCrossCandle && (
           <div className="candle-hover-popover" role="tooltip">
-            <strong>{displayedCrossCandle.time}</strong>
+            <strong>{fullCandleTimeLabel(displayedCrossCandle)}</strong>
             <span>Open <b>{formatPrice(displayedCrossCandle.open)}</b></span>
             <span>High <b className="positive">{formatPrice(displayedCrossCandle.high)}</b></span>
             <span>Low <b className="negative">{formatPrice(displayedCrossCandle.low)}</b></span>
@@ -1203,19 +1228,19 @@ function Chart({
                 <>
                   <rect
                     className="crosshair-label-bg"
-                    x={Math.max(2, Math.min(plotW - 68, crossX - 34))}
+                    x={crossTimeLeft}
                     y={timeAxisTop + 5}
-                    width="68"
+                    width={crossTimeWidth}
                     height="27"
                     rx="3"
                   />
                   <text
                     className="crosshair-label"
-                    x={Math.max(36, Math.min(plotW - 34, crossX))}
+                    x={crossTimeLeft + crossTimeWidth / 2}
                     y={timeAxisTop + 23}
                     textAnchor="middle"
                   >
-                    {displayedCrossCandle.time}
+                    {crossTimeLabel}
                   </text>
                 </>
               )}
