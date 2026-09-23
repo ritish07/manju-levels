@@ -373,6 +373,32 @@ export async function GET(request: NextRequest) {
     if (stockSecurityId > 0) {
       const stockSegment = params.get('segment') || 'NSE_EQ';
       const stockInstrument = params.get('instrument') || 'EQUITY';
+      const optionSecurityId = Number(params.get('optionSecurityId') || 0);
+      if (params.get('optionsOnly') === '1') {
+        if (!Number.isSafeInteger(optionSecurityId) || optionSecurityId <= 0 || wantedStrike <= 0)
+          return NextResponse.json({ error: 'Invalid stock option contract' }, { status: 400 });
+        const optionSpec = {
+          securityId: optionSecurityId,
+          segment: 'NSE_FNO',
+          instrument: 'OPTSTK',
+        };
+        const [optionCandles, open] = await Promise.all([
+          history(optionSpec, optionTimeframe),
+          optionDayOpen(optionSpec),
+        ]);
+        return NextResponse.json({
+          connected: true,
+          optionsOnly: true,
+          asset: 'STOCK',
+          symbol: params.get('symbol') || '',
+          selectedStrike: wantedStrike,
+          side: side.toUpperCase(),
+          optionCandles,
+          optionDayOpen: open,
+          optionTimeframe,
+          updatedAt: new Date().toISOString(),
+        }, { headers: { 'Cache-Control': 'no-store' } });
+      }
       const stockSpec = {
         securityId: stockSecurityId,
         segment: stockSegment,
@@ -440,7 +466,10 @@ export async function GET(request: NextRequest) {
         segment: 'NSE_FNO',
         instrument: 'OPTSTK',
       } : null;
-      const [optionCandles, open] = optionSpec
+      // On the first stock load, return the underlying and option chain first.
+      // The client immediately follows with the lightweight options-only call
+      // for the ATM contract, avoiding a long blank screen.
+      const [optionCandles, open] = optionSpec && wantedStrike > 0
         ? await Promise.all([
             history(optionSpec, optionTimeframe),
             optionDayOpen(optionSpec),

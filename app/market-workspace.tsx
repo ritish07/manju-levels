@@ -1559,7 +1559,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (expiry) query.set('expiry', expiry);
         const existing = liveRef.current;
         const contract = existing?.chain.find((row) => row.strike === selectedStrike)?.[side === 'CE' ? 'ce' : 'pe'];
-        const matchingFeed = !selectedStock && existing?.asset === asset && existing.expiry === expiry;
+        const matchingFeed = selectedStock
+          ? existing?.asset === 'STOCK' && existing.symbol === selectedStock.symbol && existing.expiry === expiry
+          : existing?.asset === asset && existing.expiry === expiry;
         const changedContract = existing?.selectedStrike !== selectedStrike || existing?.side !== side;
         const underlyingAlreadyCurrent = existing?.underlyingTimeframe === underlyingTimeframe;
         if (matchingFeed && underlyingAlreadyCurrent && contract && (changedContract || Date.now() - lastFullSnapshot.current < 20000)) {
