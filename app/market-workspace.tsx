@@ -466,6 +466,8 @@ function Chart({
   onActivate,
   darkMode,
   oiProfile = [],
+  linkedCrosshairTimestamp = null,
+  onLinkedCrosshairChange,
 }: {
   title: string;
   subtitle: string;
@@ -481,6 +483,8 @@ function Chart({
   onActivate: () => void;
   darkMode: boolean;
   oiProfile?: ChartOiLevel[];
+  linkedCrosshairTimestamp?: number | null;
+  onLinkedCrosshairChange?: (timestamp: number) => void;
 }) {
   const priceClipId = `price-plot-${useId().replace(/:/g, '')}`;
   const [zoom, setZoom] = useState(1);
@@ -586,12 +590,30 @@ function Chart({
     : -1;
   const crossCandle =
     crossIndex >= 0 && crossIndex < view.length ? view[crossIndex] : null;
-  const crossX = crossCandle
-    ? padL + crossIndex * slot + slot / 2 + panShift
+  const linkedCrossIndex = linkedCrosshairTimestamp
+    ? view.reduce((best, candle, index) => {
+        if (!candle.timestamp) return best;
+        if (best < 0 || !view[best]?.timestamp) return index;
+        return Math.abs(candle.timestamp - linkedCrosshairTimestamp) <
+          Math.abs(view[best].timestamp! - linkedCrosshairTimestamp)
+          ? index
+          : best;
+      }, -1)
+    : -1;
+  const linkedCrossCandle = linkedCrossIndex >= 0 ? view[linkedCrossIndex] : null;
+  const displayedCrossCandle = crossCandle || linkedCrossCandle;
+  const displayedCrossIndex = crossCandle ? crossIndex : linkedCrossIndex;
+  const crossX = displayedCrossCandle
+    ? padL + displayedCrossIndex * slot + slot / 2 + panShift
     : (cross?.x ?? 0);
+  const displayedCrossY = cross
+    ? cross.y
+    : displayedCrossCandle
+      ? y(displayedCrossCandle.close)
+      : 0;
   const crossPrice = cross
     ? max - ((cross.y - 18) / Math.max(plotH - 36, 1)) * range
-    : 0;
+    : displayedCrossCandle?.close || 0;
   const applyHorizontalZoom = (nextZoom: number) => {
     const boundedZoom = Math.min(5, Math.max(0.65, nextZoom));
     const nextVisibleCount = visibleCountAt(boundedZoom);
@@ -691,13 +713,13 @@ function Chart({
         ref={stageRef}
         className="chart-stage"
       >
-        {showCandlePopover && crossCandle && (
+        {showCandlePopover && displayedCrossCandle && (
           <div className="candle-hover-popover" role="tooltip">
-            <strong>{crossCandle.time}</strong>
-            <span>Open <b>{formatPrice(crossCandle.open)}</b></span>
-            <span>High <b className="positive">{formatPrice(crossCandle.high)}</b></span>
-            <span>Low <b className="negative">{formatPrice(crossCandle.low)}</b></span>
-            <span>Close <b>{formatPrice(crossCandle.close)}</b></span>
+            <strong>{displayedCrossCandle.time}</strong>
+            <span>Open <b>{formatPrice(displayedCrossCandle.open)}</b></span>
+            <span>High <b className="positive">{formatPrice(displayedCrossCandle.high)}</b></span>
+            <span>Low <b className="negative">{formatPrice(displayedCrossCandle.low)}</b></span>
+            <span>Close <b>{formatPrice(displayedCrossCandle.close)}</b></span>
             <span>Prev close <b>{previousClose > 0 ? formatPrice(previousClose) : '—'}</b></span>
           </div>
         )}
@@ -772,7 +794,23 @@ function Chart({
                 ),
               );
           }}
-          onPointerUp={() => (drag.current = null)}
+          onPointerUp={(e) => {
+            const activeDrag = drag.current;
+            if (
+              activeDrag?.mode === 'pan' &&
+              Math.abs(e.clientX - activeDrag.x) < 5 &&
+              Math.abs(e.clientY - activeDrag.y) < 5
+            ) {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const clickX = ((e.clientX - rect.left) / rect.width) * width;
+              const index = Math.round(
+                (clickX - padL - slot / 2 - panShift) / slot,
+              );
+              const candle = index >= 0 && index < view.length ? view[index] : null;
+              if (candle?.timestamp) onLinkedCrosshairChange?.(candle.timestamp);
+            }
+            drag.current = null;
+          }}
           onPointerLeave={(e) => {
             drag.current = null;
             setCross(null);
@@ -943,14 +981,14 @@ function Chart({
               </text>
             </g>;
           })()}
-          {cross && cross.x < plotW && cross.y >= 0 && cross.y < plotH && (
+          {displayedCrossCandle && crossX < plotW && displayedCrossY >= 0 && displayedCrossY < plotH && (
             <g className="crosshair">
               <line x1={crossX} x2={crossX} y1={0} y2={timeAxisTop} />
-              <line x1={0} x2={plotW} y1={cross.y} y2={cross.y} />
+              <line x1={0} x2={plotW} y1={displayedCrossY} y2={displayedCrossY} />
               <rect
                 className="crosshair-label-bg"
                 x={width - padR - 1}
-                y={Math.max(1, Math.min(plotH - 23, cross.y - 11))}
+                y={Math.max(1, Math.min(plotH - 23, displayedCrossY - 11))}
                 width="80"
                 height="22"
                 rx="3"
@@ -958,12 +996,12 @@ function Chart({
               <text
                 className="crosshair-label"
                 x={width - 20}
-                y={Math.max(16, Math.min(plotH - 8, cross.y + 4))}
+                y={Math.max(16, Math.min(plotH - 8, displayedCrossY + 4))}
                 textAnchor="end"
               >
                 {formatPrice(crossPrice)}
               </text>
-              {crossCandle && (
+              {displayedCrossCandle && (
                 <>
                   <rect
                     className="crosshair-label-bg"
@@ -979,7 +1017,7 @@ function Chart({
                     y={timeAxisTop + 23}
                     textAnchor="middle"
                   >
-                    {crossCandle.time}
+                    {displayedCrossCandle.time}
                   </text>
                 </>
               )}
@@ -1204,6 +1242,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [underlyingTimeframe, setUnderlyingTimeframe] = useState<Timeframe>('5m');
   const [optionTimeframe, setOptionTimeframe] = useState<Timeframe>('5m');
   const [activeChart, setActiveChart] = useState<'UNDERLYING' | 'OPTION'>('OPTION');
+  const [linkedCrosshairTimestamp, setLinkedCrosshairTimestamp] = useState<number | null>(null);
   const [chainPercent, setChainPercent] = useState(28);
   const [chartSplit, setChartSplit] = useState(50);
   const [live, setLive] = useState<LiveSnapshot | null>(null);
@@ -1785,6 +1824,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             onActivate={() => setActiveChart('UNDERLYING')}
             darkMode={darkMode}
             oiProfile={underlyingOiProfile}
+            linkedCrosshairTimestamp={linkedCrosshairTimestamp}
+            onLinkedCrosshairChange={setLinkedCrosshairTimestamp}
           />}
           {showSpot && <ResizeHandle
             onDrag={(delta) =>
@@ -1821,6 +1862,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               accent={activeChart === 'OPTION'}
               onActivate={() => setActiveChart('OPTION')}
               darkMode={darkMode}
+              linkedCrosshairTimestamp={linkedCrosshairTimestamp}
+              onLinkedCrosshairChange={setLinkedCrosshairTimestamp}
             />
           )}
         </div>
