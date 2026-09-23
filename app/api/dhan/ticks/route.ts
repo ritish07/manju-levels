@@ -27,7 +27,9 @@ export async function GET(request: NextRequest) {
 
     const underlyingSegment = stockSecurityId > 0 ? stockSegment : index.segment;
     const underlyingSecurityId = stockSecurityId > 0 ? stockSecurityId : index.securityId;
-    const optionSegment = asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
+    const optionSegment = stockSecurityId > 0
+      ? 'NSE_FNO'
+      : asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
     const instruments: Record<string, number[]> = {
       [underlyingSegment]: [underlyingSecurityId],
     };

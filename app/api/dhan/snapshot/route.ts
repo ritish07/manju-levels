@@ -378,10 +378,14 @@ export async function GET(request: NextRequest) {
         segment: stockSegment,
         instrument: stockInstrument,
       };
-      const [underlyingCandles, dailyCandles, quoteOhlc] = await Promise.all([
+      const [underlyingCandles, dailyCandles, quoteOhlc, expiryResponse] = await Promise.all([
         history(stockSpec, underlyingTimeframe),
         history(stockSpec, 'D'),
         marketOhlc(stockSpec),
+        dhan('/optionchain/expirylist', {
+          UnderlyingScrip: stockSecurityId,
+          UnderlyingSeg: stockSegment,
+        }).catch(() => ({ data: [] })),
       ]);
       const spot = underlyingCandles.at(-1)?.close || 0;
       const dayOpen = stableDayOpen(
@@ -391,21 +395,75 @@ export async function GET(request: NextRequest) {
         spot,
       );
       const weeklyOpen = stableWeeklyOpen(stockSpec, dailyCandles, dayOpen);
+      const expiries: string[] = expiryResponse.data || [];
+      const requestedExpiry = params.get('expiry');
+      const expiry = requestedExpiry && expiries.includes(requestedExpiry)
+        ? requestedExpiry
+        : expiries[0] || '';
+      let chain: { strike: number; ce: any; pe: any }[] = [];
+      if (expiry) {
+        const chainResponse = await dhan('/optionchain', {
+          UnderlyingScrip: stockSecurityId,
+          UnderlyingSeg: stockSegment,
+          Expiry: expiry,
+        });
+        chain = Object.entries(chainResponse.data?.oc || {})
+          .map(([strikeText, legs]: [string, any]) => ({
+            strike: Number(strikeText),
+            ce: legs.ce ? {
+              ltp: Number(legs.ce.last_price || 0),
+              oi: Number(legs.ce.oi || 0),
+              previousOi: Number(legs.ce.previous_oi || 0),
+              previousClose: Number(legs.ce.previous_close_price || 0),
+              securityId: Number(legs.ce.security_id),
+            } : null,
+            pe: legs.pe ? {
+              ltp: Number(legs.pe.last_price || 0),
+              oi: Number(legs.pe.oi || 0),
+              previousOi: Number(legs.pe.previous_oi || 0),
+              previousClose: Number(legs.pe.previous_close_price || 0),
+              securityId: Number(legs.pe.security_id),
+            } : null,
+          }))
+          .sort((a, b) => a.strike - b.strike);
+      }
+      const nearestAtm = chain.reduce<typeof chain[number] | undefined>(
+        (best, row) => !best || Math.abs(row.strike - spot) < Math.abs(best.strike - spot) ? row : best,
+        undefined,
+      );
+      const selected = wantedStrike > 0
+        ? chain.find((row) => row.strike === wantedStrike) || nearestAtm
+        : nearestAtm;
+      const contract = selected?.[side];
+      const optionSpec = contract ? {
+        securityId: contract.securityId,
+        segment: 'NSE_FNO',
+        instrument: 'OPTSTK',
+      } : null;
+      const [optionCandles, open] = optionSpec
+        ? await Promise.all([
+            history(optionSpec, optionTimeframe),
+            optionDayOpen(optionSpec),
+          ])
+        : [[], 0];
       return NextResponse.json(
         {
           connected: true,
           asset: 'STOCK',
           symbol: params.get('symbol') || '',
           spot,
-          expiry: '',
-          expiries: [],
+          expiry,
+          expiries,
           weeklyOpen,
           dayOpen,
-          chain: [],
-          selectedStrike: 0,
-          side: '',
+          chain,
+          selectedStrike: selected?.strike || 0,
+          side: side.toUpperCase(),
           underlyingCandles,
-          optionCandles: [],
+          optionCandles,
+          optionDayOpen: open,
+          underlyingTimeframe,
+          optionTimeframe,
           updatedAt: new Date().toISOString(),
         },
         { headers: { 'Cache-Control': 'no-store' } },
@@ -421,7 +479,7 @@ export async function GET(request: NextRequest) {
     if (params.get('quoteOnly') === '1') {
       if (!Number.isSafeInteger(quoteSecurityId) || quoteSecurityId <= 0)
         return NextResponse.json({ error: 'Invalid option contract' }, { status: 400 });
-      const segment = asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO';
+      const segment = params.get('optionSegment') || (asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO');
       const response = await dhan('/marketfeed/quote', {
         [segment]: [quoteSecurityId],
       });

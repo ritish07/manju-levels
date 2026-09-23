@@ -61,6 +61,7 @@ type OptionQuote = {
 type LiveSnapshot = {
   connected: boolean;
   asset?: string;
+  symbol?: string;
   side?: Side;
   spot: number;
   expiry: string;
@@ -469,11 +470,8 @@ function EmptyPane() {
   return (
     <section className="empty-panel">
       <div>
-        <strong>Index options unavailable for stocks</strong>
-        <span>
-          Select Nifty, Bank Nifty, or Sensex to view its option chart and
-          chain.
-        </span>
+        <strong>No listed options for this stock</strong>
+        <span>Select an NSE F&amp;O stock to view its option chart and chain.</span>
       </div>
     </section>
   );
@@ -1483,8 +1481,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [symbolSearch, setSymbolSearch] = useState('');
   const [symbolFilter, setSymbolFilter] = useState<'ALL' | 'INDICES' | 'STOCKS'>('ALL');
   const meta = ASSETS[asset];
+  const displayShort = selectedStock?.symbol || meta.short;
   const currentSpot = live?.spot || (selectedStock ? 0 : meta.spot);
-  const atm = Math.round(currentSpot / meta.step) * meta.step;
+  const stockStrikeSteps = selectedStock && live?.chain?.length
+    ? live.chain.slice(1).map((row, index) => row.strike - live.chain[index].strike).filter((step) => step > 0)
+    : [];
+  const strikeStep = stockStrikeSteps.length ? Math.min(...stockStrikeSteps) : meta.step;
+  const atm = Math.round(currentSpot / strikeStep) * strikeStep;
   useEffect(() => {
     fetch('/manju/api/dhan/instruments')
       .then((response) => response.json())
@@ -1643,9 +1646,12 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           query.set('stockSecurityId', String(selectedStock.securityId));
           query.set('stockSegment', selectedStock.segment);
         }
-        const strikeStep = ASSETS[asset].step;
-        const visibleOptionIds = current?.chain
-          .filter((row) => Math.abs(row.strike - Math.round((current.spot || 0) / strikeStep) * strikeStep) <= strikeStep * 6)
+        const currentChain = current?.chain || [];
+        const strikeStep = selectedStock && currentChain.length > 1
+          ? Math.min(...currentChain.slice(1).map((row, index) => row.strike - currentChain[index].strike).filter((step) => step > 0))
+          : ASSETS[asset].step;
+        const visibleOptionIds = currentChain
+          .filter((row) => Math.abs(row.strike - Math.round((current?.spot || 0) / strikeStep) * strikeStep) <= strikeStep * 6)
           .flatMap((row) => [row.ce?.securityId, row.pe?.securityId])
           .filter((value): value is number => Boolean(value)) || [];
         if (visibleOptionIds.length)
@@ -1712,21 +1718,21 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     };
   }, [asset, expiry, optionTimeframe, selectedStock, selectedStrike, side, underlyingTimeframe]);
   const mockStrikes = useMemo(
-    () => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * meta.step),
-    [atm, meta.step],
+    () => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * strikeStep),
+    [atm, strikeStep],
   );
   const mockUnderlying = useMemo(
     () => makeCandles(meta.spot, meta.spot, false, underlyingTimeframe),
     [meta, underlyingTimeframe],
   );
-  const distance = Math.abs(selectedStrike - atm) / meta.step;
+  const distance = Math.abs(selectedStrike - atm) / strikeStep;
   const optionBase = Math.max(
     22,
     176 -
       distance * 21 +
       (side === 'CE'
-        ? ((atm - selectedStrike) / meta.step) * 12
-        : ((selectedStrike - atm) / meta.step) * 12),
+        ? ((atm - selectedStrike) / strikeStep) * 12
+        : ((selectedStrike - atm) / strikeStep) * 12),
   );
   const mockOptionCandles = useMemo(
     () =>
@@ -1741,7 +1747,14 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const underlying = live?.underlyingCandles?.length
     ? live.underlyingCandles
     : [];
-  const optionSelectionMatches = live?.asset === asset && live?.selectedStrike === selectedStrike && live?.side === side && live?.expiry === expiry;
+  const optionSelectionMatches = Boolean(
+    (selectedStock
+      ? live?.asset === 'STOCK' && live?.symbol === selectedStock.symbol
+      : live?.asset === asset) &&
+    live?.selectedStrike === selectedStrike &&
+    live?.side === side &&
+    live?.expiry === expiry,
+  );
   const optionCandles = optionSelectionMatches && live?.optionCandles?.length
     ? live.optionCandles
     : [];
@@ -1764,8 +1777,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     { value: optionOpen, label: 'OPEN', color: '#f28c18' },
   ];
   const chainRows = live?.chain?.length
-    ? live.chain.filter((row) => Math.abs(row.strike - atm) <= meta.step * 6)
-    : mockStrikes.map((strike) => ({ strike, ce: null, pe: null }));
+    ? live.chain.filter((row) => Math.abs(row.strike - atm) <= strikeStep * 6)
+    : selectedStock
+      ? []
+      : mockStrikes.map((strike) => ({ strike, ce: null, pe: null }));
   const oiSeries = chainRows.map((row, i) => ({
     ce: row.ce?.oi ?? Math.round(42000 + Math.abs(i - 6) * 14500 + i * 1900),
     pe: row.pe?.oi ?? Math.round(51000 + Math.abs(i - 6) * 12800 + (12 - i) * 2300),
@@ -1844,6 +1859,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       setSelectedStock(stock);
       setShowSpot(true);
       setLive(null);
+      setSelectedStrike(0);
       setExpiry('');
     }
     setSymbolSearchOpen(false);
@@ -1879,6 +1895,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           quoteOnly: '1',
           quoteSecurityId: String(hoveredOption.securityId),
         });
+        if (selectedStock) query.set('optionSegment', 'NSE_FNO');
         const response = await fetch(`/manju/api/dhan/snapshot?${query}`, { cache: 'no-store' });
         const data = await response.json();
         if (active && response.ok) setHoveredQuote({ ...data, key: hoveredOption.key });
@@ -1892,7 +1909,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       active = false;
       clearTimeout(timer);
     };
-  }, [asset, hoveredOption]);
+  }, [asset, hoveredOption, selectedStock]);
   return (
     <main className={`app-shell ${darkMode ? 'dark' : ''}`}>
       {symbolSearchOpen && (
@@ -2073,12 +2090,12 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               )
             }
           />}
-          {selectedStock ? (
+          {selectedStock && live && !live.expiries?.length ? (
             <EmptyPane />
           ) : (
             <Chart
-              key={`option-${asset}-${expiry}-${selectedStrike}-${side}-${optionTimeframe}`}
-              title={`${meta.short} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
+              key={`option-${selectedStock?.securityId || asset}-${expiry}-${selectedStrike}-${side}-${optionTimeframe}`}
+              title={`${displayShort} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
               subtitle={`${optionTimeframe} · NSE F&O`}
               candles={optionCandles}
               levels={showLevels ? optionChartLevels : []}
@@ -2110,10 +2127,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           }
         />
         <aside className="chain-panel">
-          {selectedStock && (
+          {selectedStock && live && !live.expiries?.length && (
             <div className="stock-chain-disabled">
-              <strong>No index option chain</strong>
-              <span>Choose an index to restore derivatives.</span>
+              <strong>No listed options for {selectedStock.symbol}</strong>
+              <span>Select an NSE F&amp;O stock to view derivatives.</span>
             </div>
           )}
           <div className="chain-head">
@@ -2173,7 +2190,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <div className="chain-scroll">
               {chainRows.map((row, i) => {
                 const strike = row.strike;
-                const d = (strike - atm) / meta.step;
+                const d = (strike - atm) / strikeStep;
                 const ce = row.ce?.ltp ?? Math.max(7.5, 122 - d * 29 + i * 1.4);
                 const pe = row.pe?.ltp ?? Math.max(7.5, 122 + d * 29 - i * 0.7);
                 const ceChange = row.ce?.previousClose
@@ -2220,7 +2237,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       </small>
                       {hoveredOption?.key === `${strike}-CE` && (
                         <span className="option-quote-popover" role="tooltip">
-                          <strong>{meta.short} {strike.toLocaleString('en-IN')} CE</strong>
+                          <strong>{displayShort} {strike.toLocaleString('en-IN')} CE</strong>
                           {hoveredQuote?.key === `${strike}-CE` ? <>
                             <span>Open <b>{formatPrice(hoveredQuote.open)}</b></span>
                             <span>High <b className="positive">{formatPrice(hoveredQuote.high)}</b></span>
@@ -2246,7 +2263,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       {isAtm && <small>ATM</small>}
                       {levelPopoverStrike === strike && (
                         <span className="strike-popover" onPointerDown={(event) => event.stopPropagation()}>
-                          <span className="strike-popover-title">{meta.short} · Underlying levels</span>
+                          <span className="strike-popover-title">{displayShort} · Underlying levels</span>
                           <span className="strike-level resistance"><small>Immediate resistance</small><b>{strikeResistance ? `${strikeResistance.label} · ${formatPrice(strikeResistance.value)}` : '—'}</b></span>
                           <span className="strike-level current"><small>Underlying spot</small><b>{formatPrice(strike)}</b></span>
                           <span className="strike-level support"><small>Immediate support</small><b>{strikeSupport ? `${strikeSupport.label} · ${formatPrice(strikeSupport.value)}` : '—'}</b></span>
@@ -2276,7 +2293,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       </small>
                       {hoveredOption?.key === `${strike}-PE` && (
                         <span className="option-quote-popover put" role="tooltip">
-                          <strong>{meta.short} {strike.toLocaleString('en-IN')} PE</strong>
+                          <strong>{displayShort} {strike.toLocaleString('en-IN')} PE</strong>
                           {hoveredQuote?.key === `${strike}-PE` ? <>
                             <span>Open <b>{formatPrice(hoveredQuote.open)}</b></span>
                             <span>High <b className="positive">{formatPrice(hoveredQuote.high)}</b></span>
