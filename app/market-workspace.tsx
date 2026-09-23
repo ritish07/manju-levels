@@ -1,7 +1,7 @@
 'use client';
 
 import { calculateOptionLevels } from '@/app/lib/option-levels';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { type Dispatch, type SetStateAction, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -9,10 +9,15 @@ import {
   ChevronDown,
   Crosshair,
   Layers3,
+  Minus,
   Moon,
+  MousePointer2,
   RefreshCw,
+  Ruler,
   Search,
   Sun,
+  Type,
+  TrendingUp,
   X,
   ZoomIn,
   ZoomOut,
@@ -32,6 +37,12 @@ type Candle = {
 };
 type ChartLevel = { value: number; label: string; color: string };
 type ChartOiLevel = { strike: number; callOi: number; putOi: number };
+type DrawingTool = 'CURSOR' | 'HORIZONTAL' | 'TEXT' | 'SCALE' | 'TREND';
+type DrawingPoint = { timestamp: number; price: number };
+type ChartDrawing =
+  | { id: number; type: 'HORIZONTAL'; price: number }
+  | { id: number; type: 'TEXT'; point: DrawingPoint; text: string }
+  | { id: number; type: 'SCALE' | 'TREND'; start: DrawingPoint; end: DrawingPoint };
 type ChainLeg = {
   ltp: number;
   oi: number;
@@ -468,6 +479,8 @@ function Chart({
   oiProfile = [],
   linkedCrosshairTimestamp = null,
   onLinkedCrosshairChange,
+  drawings,
+  onDrawingsChange,
 }: {
   title: string;
   subtitle: string;
@@ -485,6 +498,8 @@ function Chart({
   oiProfile?: ChartOiLevel[];
   linkedCrosshairTimestamp?: number | null;
   onLinkedCrosshairChange?: (timestamp: number) => void;
+  drawings: ChartDrawing[];
+  onDrawingsChange: Dispatch<SetStateAction<ChartDrawing[]>>;
 }) {
   const priceClipId = `price-plot-${useId().replace(/:/g, '')}`;
   const [zoom, setZoom] = useState(1);
@@ -492,6 +507,12 @@ function Chart({
   const [offset, setOffset] = useState(0);
   const [yOffset, setYOffset] = useState(0);
   const [cross, setCross] = useState<{ x: number; y: number } | null>(null);
+  const [drawingTool, setDrawingTool] = useState<DrawingTool>('CURSOR');
+  const [draftDrawing, setDraftDrawing] = useState<ChartDrawing | null>(null);
+  const drawingStart = useRef<DrawingPoint | null>(null);
+  const drawingId = useRef(Date.now());
+  const [toolboxPosition, setToolboxPosition] = useState({ x: 12, y: 48 });
+  const toolboxDrag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const drag = useRef<
     | (
         | {
@@ -614,6 +635,27 @@ function Chart({
   const crossPrice = cross
     ? max - ((cross.y - 18) / Math.max(plotH - 36, 1)) * range
     : displayedCrossCandle?.close || 0;
+  const pointFromPointer = (clientX: number, clientY: number, rect: DOMRect): DrawingPoint | null => {
+    const px = ((clientX - rect.left) / rect.width) * width;
+    const py = ((clientY - rect.top) / rect.height) * height;
+    const index = Math.round((px - padL - slot / 2 - panShift) / slot);
+    const candle = index >= 0 && index < view.length ? view[index] : null;
+    if (!candle?.timestamp || px >= plotW || py >= plotH) return null;
+    return {
+      timestamp: candle.timestamp,
+      price: max - ((py - 18) / Math.max(plotH - 36, 1)) * range,
+    };
+  };
+  const drawingX = (timestamp: number) => {
+    const index = view.reduce((best, candle, candleIndex) => {
+      if (!candle.timestamp) return best;
+      if (best < 0 || !view[best]?.timestamp) return candleIndex;
+      return Math.abs(candle.timestamp - timestamp) < Math.abs(view[best].timestamp! - timestamp)
+        ? candleIndex
+        : best;
+    }, -1);
+    return index < 0 ? -100 : padL + index * slot + slot / 2 + panShift;
+  };
   const applyHorizontalZoom = (nextZoom: number) => {
     const boundedZoom = Math.min(5, Math.max(0.65, nextZoom));
     const nextVisibleCount = visibleCountAt(boundedZoom);
@@ -713,6 +755,69 @@ function Chart({
         ref={stageRef}
         className="chart-stage"
       >
+        <div
+          className="drawing-toolbox"
+          style={{ left: toolboxPosition.x, top: toolboxPosition.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            className="drawing-toolbox-handle"
+            aria-label="Move drawing tools"
+            title="Drag toolbox"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.currentTarget.setPointerCapture(event.pointerId);
+              toolboxDrag.current = {
+                x: event.clientX,
+                y: event.clientY,
+                left: toolboxPosition.x,
+                top: toolboxPosition.y,
+              };
+            }}
+            onPointerMove={(event) => {
+              if (!toolboxDrag.current || !stageRef.current) return;
+              const nextX = toolboxDrag.current.left + event.clientX - toolboxDrag.current.x;
+              const nextY = toolboxDrag.current.top + event.clientY - toolboxDrag.current.y;
+              setToolboxPosition({
+                x: Math.max(4, Math.min(stageRef.current.clientWidth - 42, nextX)),
+                y: Math.max(4, Math.min(stageRef.current.clientHeight - 188, nextY)),
+              });
+            }}
+            onPointerUp={() => (toolboxDrag.current = null)}
+          >
+            <span /><span /><span />
+          </button>
+          {([
+            ['CURSOR', MousePointer2, 'Cursor / pan'],
+            ['HORIZONTAL', Minus, 'Horizontal line'],
+            ['TEXT', Type, 'Text'],
+            ['SCALE', Ruler, 'Measure scale'],
+            ['TREND', TrendingUp, 'Trendline'],
+          ] as const).map(([tool, Icon, label]) => (
+            <button
+              key={tool}
+              type="button"
+              className={drawingTool === tool ? 'active' : ''}
+              aria-label={label}
+              title={label}
+              onClick={() => setDrawingTool(tool)}
+            >
+              <Icon />
+            </button>
+          ))}
+          <button
+            type="button"
+            aria-label="Clear drawings"
+            title="Clear drawings"
+            disabled={!drawings.length}
+            onClick={() => {
+              onDrawingsChange([]);
+              setDraftDrawing(null);
+            }}
+          >
+            <X />
+          </button>
+        </div>
         {showCandlePopover && displayedCrossCandle && (
           <div className="candle-hover-popover" role="tooltip">
             <strong>{displayedCrossCandle.time}</strong>
@@ -732,6 +837,35 @@ function Chart({
             const rect = e.currentTarget.getBoundingClientRect();
             const x = ((e.clientX - rect.left) / rect.width) * width,
               py = ((e.clientY - rect.top) / rect.height) * height;
+            if (drawingTool !== 'CURSOR') {
+              const point = pointFromPointer(e.clientX, e.clientY, rect);
+              if (!point) return;
+              if (drawingTool === 'HORIZONTAL') {
+                onDrawingsChange((items) => [
+                  ...items,
+                  { id: drawingId.current++, type: 'HORIZONTAL', price: point.price },
+                ]);
+                return;
+              }
+              if (drawingTool === 'TEXT') {
+                const text = window.prompt('Enter chart text');
+                if (text?.trim())
+                  onDrawingsChange((items) => [
+                    ...items,
+                    { id: drawingId.current++, type: 'TEXT', point, text: text.trim() },
+                  ]);
+                return;
+              }
+              drawingStart.current = point;
+              setDraftDrawing({
+                id: -1,
+                type: drawingTool,
+                start: point,
+                end: point,
+              });
+              e.currentTarget.setPointerCapture(e.pointerId);
+              return;
+            }
             drag.current =
               x > plotW && py < timeAxisTop
                 ? { mode: 'y-scale', y: e.clientY, yZoom }
@@ -760,6 +894,17 @@ function Chart({
                     ? 'grabbing'
                     : 'crosshair';
             setCross({ x, y: py });
+            if (drawingStart.current && (drawingTool === 'SCALE' || drawingTool === 'TREND')) {
+              const point = pointFromPointer(e.clientX, e.clientY, rect);
+              if (point)
+                setDraftDrawing({
+                  id: -1,
+                  type: drawingTool,
+                  start: drawingStart.current,
+                  end: point,
+                });
+              return;
+            }
             if (drag.current?.mode === 'pan') {
               setOffset(
                 Math.min(
@@ -795,6 +940,15 @@ function Chart({
               );
           }}
           onPointerUp={(e) => {
+            if (draftDrawing && (draftDrawing.type === 'SCALE' || draftDrawing.type === 'TREND')) {
+              onDrawingsChange((items) => [
+                ...items,
+                { ...draftDrawing, id: drawingId.current++ },
+              ]);
+              setDraftDrawing(null);
+              drawingStart.current = null;
+              return;
+            }
             const activeDrag = drag.current;
             if (
               activeDrag?.mode === 'pan' &&
@@ -813,6 +967,10 @@ function Chart({
           }}
           onPointerLeave={(e) => {
             drag.current = null;
+            if (drawingStart.current) {
+              drawingStart.current = null;
+              setDraftDrawing(null);
+            }
             setCross(null);
             e.currentTarget.style.cursor = 'crosshair';
           }}
@@ -950,6 +1108,46 @@ function Chart({
               </g>
             );
           })}
+          <g className="user-drawings" clipPath={`url(#${priceClipId})`}>
+            {[...drawings, ...(draftDrawing ? [draftDrawing] : [])].map((drawing) => {
+              if (drawing.type === 'HORIZONTAL') {
+                const lineY = y(drawing.price);
+                return <g key={drawing.id}>
+                  <line x1={0} x2={plotW} y1={lineY} y2={lineY} />
+                  <text x={12} y={lineY - 6}>{formatPrice(drawing.price)}</text>
+                </g>;
+              }
+              if (drawing.type === 'TEXT') {
+                return <text
+                  key={drawing.id}
+                  className="drawing-text"
+                  x={drawingX(drawing.point.timestamp)}
+                  y={y(drawing.point.price)}
+                >{drawing.text}</text>;
+              }
+              const x1 = drawingX(drawing.start.timestamp);
+              const x2 = drawingX(drawing.end.timestamp);
+              const y1 = y(drawing.start.price);
+              const y2 = y(drawing.end.price);
+              if (drawing.type === 'TREND')
+                return <line key={drawing.id} x1={x1} y1={y1} x2={x2} y2={y2} />;
+              const delta = drawing.end.price - drawing.start.price;
+              const percent = drawing.start.price
+                ? (delta / drawing.start.price) * 100
+                : 0;
+              const labelX = Math.max(48, Math.min(plotW - 48, (x1 + x2) / 2));
+              const labelY = Math.max(18, Math.min(plotH - 12, (y1 + y2) / 2));
+              return <g key={drawing.id} className="scale-drawing">
+                <line x1={x1} y1={y1} x2={x2} y2={y2} />
+                <line x1={x1} y1={y1} x2={x2} y2={y1} />
+                <line x1={x2} y1={y1} x2={x2} y2={y2} />
+                <rect x={labelX - 43} y={labelY - 12} width="86" height="22" rx="4" />
+                <text x={labelX} y={labelY + 3} textAnchor="middle">
+                  {delta >= 0 ? '+' : ''}{formatPrice(delta)} · {percent.toFixed(2)}%
+                </text>
+              </g>;
+            })}
+          </g>
           {(() => {
             const priceY = Math.max(11, Math.min(plotH - 11, y(latest.close)));
             const priceColor = up ? '#089981' : '#f23645';
@@ -1243,6 +1441,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [optionTimeframe, setOptionTimeframe] = useState<Timeframe>('5m');
   const [activeChart, setActiveChart] = useState<'UNDERLYING' | 'OPTION'>('OPTION');
   const [linkedCrosshairTimestamp, setLinkedCrosshairTimestamp] = useState<number | null>(null);
+  const [underlyingDrawings, setUnderlyingDrawings] = useState<ChartDrawing[]>([]);
+  const [optionDrawings, setOptionDrawings] = useState<ChartDrawing[]>([]);
   const [chainPercent, setChainPercent] = useState(28);
   const [chartSplit, setChartSplit] = useState(50);
   const [live, setLive] = useState<LiveSnapshot | null>(null);
@@ -1826,6 +2026,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             oiProfile={underlyingOiProfile}
             linkedCrosshairTimestamp={linkedCrosshairTimestamp}
             onLinkedCrosshairChange={setLinkedCrosshairTimestamp}
+            drawings={underlyingDrawings}
+            onDrawingsChange={setUnderlyingDrawings}
           />}
           {showSpot && <ResizeHandle
             onDrag={(delta) =>
@@ -1864,6 +2066,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               darkMode={darkMode}
               linkedCrosshairTimestamp={linkedCrosshairTimestamp}
               onLinkedCrosshairChange={setLinkedCrosshairTimestamp}
+              drawings={optionDrawings}
+              onDrawingsChange={setOptionDrawings}
             />
           )}
         </div>
