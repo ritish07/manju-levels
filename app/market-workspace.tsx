@@ -68,6 +68,7 @@ type LiveSnapshot = {
   expiries: string[];
   weeklyOpen: number;
   dayOpen?: number;
+  underlyingPreviousClose?: number;
   optionDayOpen?: number;
   futurePrice?: number;
   futureSymbol?: string;
@@ -732,6 +733,11 @@ function Chart({
                 O {formatPrice(latest.open)} H {formatPrice(latest.high)} L{' '}
                 {formatPrice(latest.low)} C {formatPrice(latest.close)}
               </span>
+              {previousClose > 0 && (
+                <span className={priceChange >= 0 ? 'positive' : 'negative'}>
+                  {priceChange >= 0 ? '+' : ''}{formatPrice(priceChange)} ({priceChange >= 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%)
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -1483,6 +1489,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const meta = ASSETS[asset];
   const displayShort = selectedStock?.symbol || meta.short;
   const currentSpot = live?.spot || (selectedStock ? 0 : meta.spot);
+  const underlyingPreviousClose = live?.underlyingPreviousClose || 0;
+  const underlyingChange = underlyingPreviousClose > 0
+    ? currentSpot - underlyingPreviousClose
+    : 0;
+  const underlyingChangePercent = underlyingPreviousClose > 0
+    ? (underlyingChange / underlyingPreviousClose) * 100
+    : meta.change;
   const stockStrikeSteps = selectedStock && live?.chain?.length
     ? live.chain.slice(1).map((row, index) => row.strike - live.chain[index].strike).filter((step) => step > 0)
     : [];
@@ -1979,9 +1992,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         </div>
         <div className="market-quote">
           <strong>{formatPrice(currentSpot)}</strong>
-          <span className={meta.change >= 0 ? 'positive' : 'negative'}>
-            {meta.change >= 0 ? '+' : ''}
-            {meta.change.toFixed(2)}%
+          <span className={underlyingChangePercent >= 0 ? 'positive' : 'negative'}>
+            {underlyingPreviousClose > 0 && <>{underlyingChange >= 0 ? '+' : ''}{formatPrice(underlyingChange)} </>}
+            ({underlyingChangePercent >= 0 ? '+' : ''}{underlyingChangePercent.toFixed(2)}%)
           </span>
           {!selectedStock && (
             <span className={`future-quote ${live?.futurePrice ? '' : 'unavailable'}`} title={live?.futureSymbol || 'Available when Dhan is connected'}>
@@ -2060,6 +2073,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             subtitle={`${underlyingTimeframe} · ${selectedStock ? 'NSE' : `NSE · ${levelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(levelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}`}
             candles={underlying}
             levels={showLevels ? underlyingChartLevels : []}
+            previousClose={underlyingPreviousClose}
             timeframe={underlyingTimeframe}
             onTimeframeChange={setUnderlyingTimeframe}
             levelMode={selectedStock ? undefined : levelMode}
