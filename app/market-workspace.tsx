@@ -549,9 +549,12 @@ function Chart({
   const panCeil = Math.ceil(offset);
   const start = Math.max(0, candles.length - visibleCount - panCeil);
   const view = candles.slice(start, start + visibleCount + 1);
-  const vals = candles
+  // TradingView-style autoscale follows the candles that are actually visible.
+  // Distant history and off-screen target lines must not push the current bars
+  // outside the viewport after switching interval.
+  const vals = view
     .flatMap((c) => [c.high, c.low])
-    .concat(levels.map((level) => level.value));
+    .filter(Number.isFinite);
   const dataMin = Math.min(...vals),
     dataMax = Math.max(...vals),
     dataRange = Math.max(dataMax - dataMin, 1);
@@ -1302,7 +1305,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             if (!previous) return previous;
             const optionCandles = mergeSnapshotCandles(
               data.optionCandles || [],
-              previous.optionCandles || [],
+              previous.optionTimeframe === optionTimeframe
+                ? previous.optionCandles || []
+                : [],
               optionTimeframe,
             );
             return { ...previous, ...data, optionCandles };
@@ -1315,12 +1320,16 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               ...data,
               underlyingCandles: mergeSnapshotCandles(
                 data.underlyingCandles || [],
-                previous.underlyingCandles || [],
+                previous.underlyingTimeframe === underlyingTimeframe
+                  ? previous.underlyingCandles || []
+                  : [],
                 underlyingTimeframe,
               ),
               optionCandles: mergeSnapshotCandles(
                 data.optionCandles || [],
-                previous.optionCandles || [],
+                previous.optionTimeframe === optionTimeframe
+                  ? previous.optionCandles || []
+                  : [],
                 optionTimeframe,
               ),
             };
@@ -1752,6 +1761,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           }}
         >
           {showSpot && <Chart
+            key={`underlying-${selectedStock?.securityId || asset}-${underlyingTimeframe}`}
             title={
               selectedStock
                 ? `${selectedStock.symbol} · ${selectedStock.name}`
@@ -1792,6 +1802,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <EmptyPane />
           ) : (
             <Chart
+              key={`option-${asset}-${expiry}-${selectedStrike}-${side}-${optionTimeframe}`}
               title={`${meta.short} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
               subtitle={`${optionTimeframe} · NSE F&O`}
               candles={optionCandles}
