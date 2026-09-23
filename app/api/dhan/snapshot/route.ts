@@ -303,6 +303,53 @@ function findDayOpen(candles: Candle[], fallback: number) {
   );
 }
 
+// The exchange session open is immutable. Keep it stable across independent
+// timeframe requests so a delayed quote/history response cannot move the open
+// line when the user changes chart interval.
+const underlyingSessionOpens = new Map<string, number>();
+const underlyingWeeklyOpens = new Map<string, number>();
+function stableDayOpen(
+  spec: { securityId: number; segment: string },
+  candles: Candle[],
+  quoteOpen: number,
+  fallback: number,
+) {
+  const today = tradingDate();
+  const key = `${today}:${spec.segment}:${spec.securityId}`;
+  const cached = underlyingSessionOpens.get(key);
+  if (cached && cached > 0) return cached;
+  const todayOpen = candles.find(
+    (candle) => tradingDate(candle.timestamp) === today,
+  )?.open || 0;
+  const confirmed = quoteOpen > 0 ? quoteOpen : todayOpen;
+  if (confirmed > 0) underlyingSessionOpens.set(key, confirmed);
+  if (underlyingSessionOpens.size > 100) {
+    for (const cachedKey of underlyingSessionOpens.keys())
+      if (!cachedKey.startsWith(`${today}:`)) underlyingSessionOpens.delete(cachedKey);
+  }
+  return confirmed || findDayOpen(candles, fallback);
+}
+
+function stableWeeklyOpen(
+  spec: { securityId: number; segment: string },
+  candles: Candle[],
+  dayOpen: number,
+) {
+  const monday = new Date();
+  const day = monday.getDay();
+  monday.setDate(monday.getDate() - ((day + 6) % 7));
+  const mondayText = istDate(monday);
+  const key = `${mondayText}:${spec.segment}:${spec.securityId}`;
+  const cached = underlyingWeeklyOpens.get(key);
+  if (cached && cached > 0) return cached;
+  const firstWeeklyCandle = candles.find(
+    (candle) => istDate(new Date(candle.timestamp * 1000)) >= mondayText,
+  );
+  const confirmed = firstWeeklyCandle?.open || (day === 1 ? dayOpen : 0);
+  if (confirmed > 0) underlyingWeeklyOpens.set(key, confirmed);
+  return confirmed || findWeeklyOpen(candles, dayOpen);
+}
+
 async function marketOhlc(spec: { securityId: number; segment: string }) {
   try {
     const response = await dhan('/marketfeed/ohlc', {
@@ -337,6 +384,13 @@ export async function GET(request: NextRequest) {
         marketOhlc(stockSpec),
       ]);
       const spot = underlyingCandles.at(-1)?.close || 0;
+      const dayOpen = stableDayOpen(
+        stockSpec,
+        dailyCandles,
+        Number(quoteOhlc.open || 0),
+        spot,
+      );
+      const weeklyOpen = stableWeeklyOpen(stockSpec, dailyCandles, dayOpen);
       return NextResponse.json(
         {
           connected: true,
@@ -345,8 +399,8 @@ export async function GET(request: NextRequest) {
           spot,
           expiry: '',
           expiries: [],
-          weeklyOpen: findWeeklyOpen(dailyCandles, Number(quoteOhlc.open || 0) || spot),
-          dayOpen: Number(quoteOhlc.open || 0) || findDayOpen(dailyCandles, spot),
+          weeklyOpen,
+          dayOpen,
           chain: [],
           selectedStrike: 0,
           side: '',
@@ -475,8 +529,13 @@ export async function GET(request: NextRequest) {
       history(spec, 'D'),
       marketOhlc(spec),
     ]);
-    const weeklyOpen = findWeeklyOpen(dailyCandles, Number(quoteOhlc.open || 0) || spot);
-    const dayOpen = Number(quoteOhlc.open || 0) || findDayOpen(dailyCandles, spot);
+    const dayOpen = stableDayOpen(
+      spec,
+      dailyCandles,
+      Number(quoteOhlc.open || 0),
+      spot,
+    );
+    const weeklyOpen = stableWeeklyOpen(spec, dailyCandles, dayOpen);
     return NextResponse.json(
       {
         connected: true,

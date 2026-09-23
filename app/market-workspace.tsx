@@ -540,13 +540,15 @@ function Chart({
     plotH = timeAxisTop,
     padL = 10,
     padR = width < 430 ? 82 : 94;
-  const visibleCount = Math.min(
+  const visibleCountAt = (nextZoom: number) => Math.min(
     candles.length,
-    Math.max(24, Math.floor(92 / zoom)),
+    Math.max(24, Math.floor(92 / nextZoom)),
   );
+  const visibleCount = visibleCountAt(zoom);
   const minOffset = -Math.floor(visibleCount * 0.65);
   const maxOffset = Math.max(0, candles.length - visibleCount);
-  const panCeil = Math.ceil(offset);
+  const boundedOffset = Math.min(maxOffset, Math.max(minOffset, offset));
+  const panCeil = Math.ceil(boundedOffset);
   const start = Math.max(0, candles.length - visibleCount - panCeil);
   const view = candles.slice(start, start + visibleCount + 1);
   // TradingView-style autoscale follows the candles that are actually visible.
@@ -565,7 +567,7 @@ function Chart({
   const y = (v: number) => 18 + ((max - v) / range) * (plotH - 36);
   const plotW = width - padL - padR;
   const slot = plotW / visibleCount;
-  const panShift = (offset - panCeil) * slot;
+  const panShift = (boundedOffset - panCeil) * slot;
   const body = Math.max(2.5, Math.min(8, slot * 0.58));
   const latest = candles[candles.length - 1];
   const up = latest.close >= latest.open;
@@ -590,6 +592,20 @@ function Chart({
   const crossPrice = cross
     ? max - ((cross.y - 18) / Math.max(plotH - 36, 1)) * range
     : 0;
+  const applyHorizontalZoom = (nextZoom: number) => {
+    const boundedZoom = Math.min(5, Math.max(0.65, nextZoom));
+    const nextVisibleCount = visibleCountAt(boundedZoom);
+    const nextMinOffset = -Math.floor(nextVisibleCount * 0.65);
+    const nextMaxOffset = Math.max(0, candles.length - nextVisibleCount);
+    setZoom(boundedZoom);
+    setOffset((value) =>
+      Math.min(nextMaxOffset, Math.max(nextMinOffset, value)),
+    );
+    // Horizontal zoom returns to price autoscale, matching TradingView's
+    // predictable "bars stay visible" behaviour.
+    setYZoom(1);
+    setYOffset(0);
+  };
   const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
@@ -602,10 +618,7 @@ function Chart({
       setOffset((v) =>
         Math.min(maxOffset, Math.max(minOffset, v + e.deltaX / 12)),
       );
-    else
-      setZoom((v) =>
-        Math.min(5, Math.max(0.65, v * (e.deltaY > 0 ? 0.9 : 1.12))),
-      );
+    else applyHorizontalZoom(zoom * (e.deltaY > 0 ? 0.9 : 1.12));
   };
   return (
     <section className={`chart-panel ${accent ? 'active-chart' : ''}`} onPointerDownCapture={onActivate}>
@@ -651,13 +664,13 @@ function Chart({
           </label>}
           <button
             aria-label="Zoom out"
-            onClick={() => setZoom((v) => Math.max(0.65, v / 1.25))}
+            onClick={() => applyHorizontalZoom(zoom / 1.25)}
           >
             <ZoomOut />
           </button>
           <button
             aria-label="Zoom in"
-            onClick={() => setZoom((v) => Math.min(5, v * 1.25))}
+            onClick={() => applyHorizontalZoom(zoom * 1.25)}
           >
             <ZoomIn />
           </button>
@@ -743,15 +756,9 @@ function Chart({
               );
             }
             if (drag.current?.mode === 'x-scale')
-              setZoom(
-                Math.min(
-                  5,
-                  Math.max(
-                    0.65,
-                    drag.current.zoom *
-                      Math.exp((drag.current.x - e.clientX) / 240),
-                  ),
-                ),
+              applyHorizontalZoom(
+                drag.current.zoom *
+                  Math.exp((drag.current.x - e.clientX) / 240),
               );
             if (drag.current?.mode === 'y-scale')
               setYZoom(
