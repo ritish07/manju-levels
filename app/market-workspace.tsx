@@ -356,10 +356,10 @@ function applyLivePrice(
     low: Math.min(last.low, price, dayLow),
     close: price,
   };
-  return sanitizeLatestCandle(next);
+  return sanitizeLatestCandle(next, price);
 }
 
-function sanitizeLatestCandle(candles: Candle[]) {
+function sanitizeLatestCandle(candles: Candle[], expectedPrice = 0) {
   if (candles.length < 3) return candles;
   const next = candles.slice();
   const last = { ...next[next.length - 1] };
@@ -372,15 +372,26 @@ function sanitizeLatestCandle(candles: Candle[]) {
   const medianRange = recentRanges.length
     ? recentRanges[Math.floor(recentRanges.length / 2)]
     : 0;
-  const reference = Math.max(last.open, last.close, previous.close, 1);
+  const reference = Math.max(previous.close, expectedPrice, 1);
   // Dhan occasionally reports the contract's day high/low as the unfinished
   // minute candle's wick. Reject only an isolated extreme that is far beyond
   // both recent volatility and a generous percentage move from its body.
   const maximumWick = Math.max(medianRange * 8, reference * 0.12, 1);
-  const bodyLow = Math.min(last.open, last.close, previous.close);
-  const bodyHigh = Math.max(last.open, last.close, previous.close);
-  if (last.low < bodyLow - maximumWick) last.low = Math.min(last.open, last.close);
-  if (last.high > bodyHigh + maximumWick) last.high = Math.max(last.open, last.close);
+  const malformed = [last.open, last.high, last.low, last.close].some(
+    (value) => !Number.isFinite(value) || value <= 0 || Math.abs(value - previous.close) > maximumWick,
+  );
+  if (malformed) {
+    const safeClose =
+      expectedPrice > 0 && Math.abs(expectedPrice - previous.close) <= maximumWick
+        ? expectedPrice
+        : Math.abs(last.close - previous.close) <= maximumWick
+          ? last.close
+          : previous.close;
+    last.open = previous.close;
+    last.close = safeClose;
+    last.high = Math.max(previous.close, safeClose);
+    last.low = Math.min(previous.close, safeClose);
+  }
   last.low = Math.min(last.low, last.open, last.close);
   last.high = Math.max(last.high, last.open, last.close);
   next[next.length - 1] = last;
@@ -391,8 +402,10 @@ function mergeSnapshotCandles(
   fresh: Candle[],
   current: Candle[],
   timeframe: Timeframe,
+  expectedPrice = 0,
 ) {
-  fresh = sanitizeLatestCandle(fresh);
+  fresh = sanitizeLatestCandle(fresh, expectedPrice);
+  current = sanitizeLatestCandle(current, expectedPrice);
   const live = current.at(-1);
   if (!live) return fresh;
   const freshLast = fresh.at(-1);
@@ -407,7 +420,7 @@ function mergeSnapshotCandles(
     sameCandle = Boolean(freshLast && live.time === freshLast.time);
   }
   if (!freshLast || !sameCandle) return fresh;
-  return [
+  return sanitizeLatestCandle([
     ...fresh.slice(0, -1),
     {
       ...freshLast,
@@ -416,7 +429,7 @@ function mergeSnapshotCandles(
       close: live.close,
       volume: Math.max(freshLast.volume, live.volume),
     },
-  ];
+  ], expectedPrice);
 }
 
 function targetLabel(step: number) {
@@ -1648,6 +1661,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (data.optionsOnly) {
           setLive((previous) => {
             if (!previous) return previous;
+            const selectedLeg = previous.chain.find(
+              (row) => row.strike === data.selectedStrike,
+            )?.[data.side === 'CE' ? 'ce' : 'pe'];
+            const expectedOptionPrice = selectedLeg?.ltp || 0;
             const sameOptionContract =
               (selectedStock
                 ? previous.asset === 'STOCK' && previous.symbol === selectedStock.symbol
@@ -1662,6 +1679,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                 ? previous.optionCandles || []
                 : [],
               optionTimeframe,
+              expectedOptionPrice,
             );
             return { ...previous, ...data, optionCandles };
           });
@@ -1676,7 +1694,11 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               return {
                 ...data,
                 underlyingCandles: sanitizeLatestCandle(data.underlyingCandles || []),
-                optionCandles: sanitizeLatestCandle(data.optionCandles || []),
+                optionCandles: sanitizeLatestCandle(
+                  data.optionCandles || [],
+                  data.chain?.find((row: { strike: number }) => row.strike === data.selectedStrike)
+                    ?.[data.side === 'CE' ? 'ce' : 'pe']?.ltp || 0,
+                ),
               };
             const sameUnderlying = selectedStock
               ? previous.asset === 'STOCK' && previous.symbol === selectedStock.symbol
@@ -1687,6 +1709,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               previous.selectedStrike === data.selectedStrike &&
               previous.side === data.side &&
               previous.optionSecurityId === data.optionSecurityId;
+            const expectedOptionPrice = data.chain?.find(
+              (row: { strike: number }) => row.strike === data.selectedStrike,
+            )?.[data.side === 'CE' ? 'ce' : 'pe']?.ltp || 0;
             return {
               ...data,
               underlyingCandles: mergeSnapshotCandles(
@@ -1702,6 +1727,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                   ? previous.optionCandles || []
                   : [],
                 optionTimeframe,
+                expectedOptionPrice,
               ),
             };
           });
