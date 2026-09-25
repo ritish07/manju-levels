@@ -478,6 +478,8 @@ function EmptyPane() {
   );
 }
 
+type SyncedCrosshair = { timestamp: number; yRatio: number };
+
 function Chart({
   title,
   subtitle,
@@ -495,6 +497,8 @@ function Chart({
   oiProfile = [],
   linkedCrosshairTimestamp = null,
   onLinkedCrosshairChange,
+  hoveredCrosshair = null,
+  onCrosshairHover,
   drawings,
   onDrawingsChange,
 }: {
@@ -514,6 +518,8 @@ function Chart({
   oiProfile?: ChartOiLevel[];
   linkedCrosshairTimestamp?: number | null;
   onLinkedCrosshairChange?: (timestamp: number) => void;
+  hoveredCrosshair?: SyncedCrosshair | null;
+  onCrosshairHover?: (value: SyncedCrosshair | null) => void;
   drawings: ChartDrawing[];
   onDrawingsChange: Dispatch<SetStateAction<ChartDrawing[]>>;
 }) {
@@ -627,12 +633,13 @@ function Chart({
     : -1;
   const crossCandle =
     crossIndex >= 0 && crossIndex < view.length ? view[crossIndex] : null;
-  const linkedCrossIndex = linkedCrosshairTimestamp
+  const activeCrosshairTimestamp = hoveredCrosshair?.timestamp ?? linkedCrosshairTimestamp;
+  const linkedCrossIndex = activeCrosshairTimestamp
     ? view.reduce((best, candle, index) => {
         if (!candle.timestamp) return best;
         if (best < 0 || !view[best]?.timestamp) return index;
-        return Math.abs(candle.timestamp - linkedCrosshairTimestamp) <
-          Math.abs(view[best].timestamp! - linkedCrosshairTimestamp)
+        return Math.abs(candle.timestamp - activeCrosshairTimestamp) <
+          Math.abs(view[best].timestamp! - activeCrosshairTimestamp)
           ? index
           : best;
       }, -1)
@@ -645,6 +652,8 @@ function Chart({
     : (cross?.x ?? 0);
   const displayedCrossY = cross
     ? cross.y
+    : hoveredCrosshair
+      ? hoveredCrosshair.yRatio * plotH
     : displayedCrossCandle
       ? y(displayedCrossCandle.close)
       : 0;
@@ -656,8 +665,8 @@ function Chart({
     2,
     Math.min(plotW - crossTimeWidth - 2, crossX - crossTimeWidth / 2),
   );
-  const crossPrice = cross
-    ? max - ((cross.y - 18) / Math.max(plotH - 36, 1)) * range
+  const crossPrice = cross || hoveredCrosshair
+    ? max - ((displayedCrossY - 18) / Math.max(plotH - 36, 1)) * range
     : displayedCrossCandle?.close || 0;
   const pointFromPointer = (clientX: number, clientY: number, rect: DOMRect): DrawingPoint | null => {
     const px = ((clientX - rect.left) / rect.width) * width;
@@ -923,6 +932,19 @@ function Chart({
                     ? 'grabbing'
                     : 'crosshair';
             setCross({ x, y: py });
+            const hoverIndex = Math.round(
+              (x - padL - slot / 2 - panShift) / slot,
+            );
+            const hoverCandle =
+              hoverIndex >= 0 && hoverIndex < view.length
+                ? view[hoverIndex]
+                : null;
+            if (x < plotW && py >= 0 && py < plotH && hoverCandle?.timestamp)
+              onCrosshairHover?.({
+                timestamp: hoverCandle.timestamp,
+                yRatio: py / Math.max(plotH, 1),
+              });
+            else onCrosshairHover?.(null);
             if (drawingStart.current && (drawingTool === 'SCALE' || drawingTool === 'TREND')) {
               const point = pointFromPointer(e.clientX, e.clientY, rect);
               if (point)
@@ -1001,6 +1023,7 @@ function Chart({
               setDraftDrawing(null);
             }
             setCross(null);
+            onCrosshairHover?.(null);
             e.currentTarget.style.cursor = 'crosshair';
           }}
         >
@@ -1470,11 +1493,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [optionTimeframe, setOptionTimeframe] = useState<Timeframe>('5m');
   const [activeChart, setActiveChart] = useState<'UNDERLYING' | 'OPTION'>('OPTION');
   const [linkedCrosshairTimestamp, setLinkedCrosshairTimestamp] = useState<number | null>(null);
+  const [hoveredCrosshair, setHoveredCrosshair] = useState<SyncedCrosshair | null>(null);
   const [underlyingDrawings, setUnderlyingDrawings] = useState<ChartDrawing[]>([]);
   const [optionDrawings, setOptionDrawings] = useState<ChartDrawing[]>([]);
   const [chainPercent, setChainPercent] = useState(28);
   const [chartSplit, setChartSplit] = useState(50);
   const [live, setLive] = useState<LiveSnapshot | null>(null);
+  const [chartsLoading, setChartsLoading] = useState(true);
   const liveRef = useRef<LiveSnapshot | null>(null);
   liveRef.current = live;
   const lastFullSnapshot = useRef(0);
@@ -1554,6 +1579,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
+    setChartsLoading(true);
     const load = async () => {
       try {
         const query = new URLSearchParams({
@@ -1601,28 +1627,46 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             );
             return { ...previous, ...data, optionCandles };
           });
+          if (
+            (data.optionCandles || []).length > 0 &&
+            (liveRef.current?.underlyingCandles || []).length > 0
+          ) setChartsLoading(false);
         } else {
           lastFullSnapshot.current = Date.now();
           setLive((previous) => {
             if (!previous) return data;
+            const sameUnderlying = selectedStock
+              ? previous.asset === 'STOCK' && previous.symbol === selectedStock.symbol
+              : previous.asset === asset;
+            const sameOption =
+              sameUnderlying &&
+              previous.expiry === data.expiry &&
+              previous.selectedStrike === data.selectedStrike &&
+              previous.side === data.side;
             return {
               ...data,
               underlyingCandles: mergeSnapshotCandles(
                 data.underlyingCandles || [],
-                previous.underlyingTimeframe === underlyingTimeframe
+                sameUnderlying && previous.underlyingTimeframe === underlyingTimeframe
                   ? previous.underlyingCandles || []
                   : [],
                 underlyingTimeframe,
               ),
               optionCandles: mergeSnapshotCandles(
                 data.optionCandles || [],
-                previous.optionTimeframe === optionTimeframe
+                sameOption && previous.optionTimeframe === optionTimeframe
                   ? previous.optionCandles || []
                   : [],
                 optionTimeframe,
               ),
             };
           });
+          const underlyingReady = (data.underlyingCandles || []).length > 0;
+          const optionReady = (data.optionCandles || []).length > 0;
+          const hasNoListedOptions =
+            Boolean(selectedStock) && Array.isArray(data.expiries) && !data.expiries.length;
+          if (underlyingReady && (optionReady || hasNoListedOptions))
+            setChartsLoading(false);
         }
         // Keep the visible strike synchronized with the exact contract Dhan
         // returned (important after changing the underlying or expiry).
@@ -1633,6 +1677,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       } catch (error) {
         if (active) {
           setLive(null);
+          setChartsLoading(false);
           setFeedError(
             error instanceof Error ? error.message : 'Dhan feed unavailable',
           );
@@ -1856,8 +1901,11 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const chooseAsset = (value: AssetKey) => {
     setSelectedStock(null);
     setAsset(value);
-    const next = ASSETS[value];
+    setLive(null);
     setSelectedStrike(0);
+    setExpiry('');
+    setLinkedCrosshairTimestamp(null);
+    setHoveredCrosshair(null);
     setSymbolSearchOpen(false);
     setSymbolSearch('');
   };
@@ -1876,6 +1924,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       setLive(null);
       setSelectedStrike(0);
       setExpiry('');
+      setLinkedCrosshairTimestamp(null);
+      setHoveredCrosshair(null);
     }
     setSymbolSearchOpen(false);
     setSymbolSearch('');
@@ -1926,7 +1976,16 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     };
   }, [asset, hoveredOption, selectedStock]);
   return (
-    <main className={`app-shell ${darkMode ? 'dark' : ''}`}>
+    <main className={`app-shell ${darkMode ? 'dark' : ''}`} aria-busy={chartsLoading}>
+      {chartsLoading && appView === 'MARKET' && (
+        <div className="charts-loading-overlay" role="status" aria-live="polite">
+          <div className="charts-loading-card">
+            <span className="charts-loading-spinner" aria-hidden="true" />
+            <strong>Loading both charts</strong>
+            <small>Fetching the correct candles from Dhan…</small>
+          </div>
+        </div>
+      )}
       {symbolSearchOpen && (
         <div
           className="symbol-modal-backdrop"
@@ -2084,6 +2143,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             oiProfile={underlyingOiProfile}
             linkedCrosshairTimestamp={linkedCrosshairTimestamp}
             onLinkedCrosshairChange={setLinkedCrosshairTimestamp}
+            hoveredCrosshair={hoveredCrosshair}
+            onCrosshairHover={setHoveredCrosshair}
             drawings={underlyingDrawings}
             onDrawingsChange={setUnderlyingDrawings}
           />}
@@ -2124,6 +2185,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               darkMode={darkMode}
               linkedCrosshairTimestamp={linkedCrosshairTimestamp}
               onLinkedCrosshairChange={setLinkedCrosshairTimestamp}
+              hoveredCrosshair={hoveredCrosshair}
+              onCrosshairHover={setHoveredCrosshair}
               drawings={optionDrawings}
               onDrawingsChange={setOptionDrawings}
             />
