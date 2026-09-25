@@ -70,6 +70,7 @@ type LiveSnapshot = {
   dayOpen?: number;
   underlyingPreviousClose?: number;
   optionDayOpen?: number;
+  optionSecurityId?: number;
   futurePrice?: number;
   futureSymbol?: string;
   futureExpiry?: string;
@@ -355,6 +356,34 @@ function applyLivePrice(
     low: Math.min(last.low, price, dayLow),
     close: price,
   };
+  return sanitizeLatestCandle(next);
+}
+
+function sanitizeLatestCandle(candles: Candle[]) {
+  if (candles.length < 3) return candles;
+  const next = candles.slice();
+  const last = { ...next[next.length - 1] };
+  const previous = next[next.length - 2];
+  const recentRanges = next
+    .slice(Math.max(0, next.length - 21), -1)
+    .map((candle) => Math.max(0, candle.high - candle.low))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  const medianRange = recentRanges.length
+    ? recentRanges[Math.floor(recentRanges.length / 2)]
+    : 0;
+  const reference = Math.max(last.open, last.close, previous.close, 1);
+  // Dhan occasionally reports the contract's day high/low as the unfinished
+  // minute candle's wick. Reject only an isolated extreme that is far beyond
+  // both recent volatility and a generous percentage move from its body.
+  const maximumWick = Math.max(medianRange * 8, reference * 0.12, 1);
+  const bodyLow = Math.min(last.open, last.close, previous.close);
+  const bodyHigh = Math.max(last.open, last.close, previous.close);
+  if (last.low < bodyLow - maximumWick) last.low = Math.min(last.open, last.close);
+  if (last.high > bodyHigh + maximumWick) last.high = Math.max(last.open, last.close);
+  last.low = Math.min(last.low, last.open, last.close);
+  last.high = Math.max(last.high, last.open, last.close);
+  next[next.length - 1] = last;
   return next;
 }
 
@@ -363,6 +392,7 @@ function mergeSnapshotCandles(
   current: Candle[],
   timeframe: Timeframe,
 ) {
+  fresh = sanitizeLatestCandle(fresh);
   const live = current.at(-1);
   if (!live) return fresh;
   const freshLast = fresh.at(-1);
@@ -1624,6 +1654,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                 : previous.asset === asset) &&
               previous.selectedStrike === data.selectedStrike &&
               previous.side === data.side &&
+              previous.optionSecurityId === data.optionSecurityId &&
               previous.optionTimeframe === optionTimeframe;
             const optionCandles = mergeSnapshotCandles(
               data.optionCandles || [],
@@ -1641,7 +1672,12 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         } else {
           lastFullSnapshot.current = Date.now();
           setLive((previous) => {
-            if (!previous) return data;
+            if (!previous)
+              return {
+                ...data,
+                underlyingCandles: sanitizeLatestCandle(data.underlyingCandles || []),
+                optionCandles: sanitizeLatestCandle(data.optionCandles || []),
+              };
             const sameUnderlying = selectedStock
               ? previous.asset === 'STOCK' && previous.symbol === selectedStock.symbol
               : previous.asset === asset;
@@ -1649,7 +1685,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               sameUnderlying &&
               previous.expiry === data.expiry &&
               previous.selectedStrike === data.selectedStrike &&
-              previous.side === data.side;
+              previous.side === data.side &&
+              previous.optionSecurityId === data.optionSecurityId;
             return {
               ...data,
               underlyingCandles: mergeSnapshotCandles(
@@ -1690,7 +1727,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           );
         }
       } finally {
-        if (active) timer = setTimeout(load, 4000);
+        // Live prices continue through the lightweight tick endpoint. Refresh
+        // history less often so strike changes are not queued behind repeated
+        // full candle downloads at Dhan.
+        if (active) timer = setTimeout(load, 15000);
       }
     };
     load();
@@ -1823,7 +1863,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       : live?.asset === asset) &&
     live?.selectedStrike === selectedStrike &&
     live?.side === side &&
-    live?.expiry === expiry,
+    live?.expiry === expiry &&
+    live?.optionSecurityId === live?.chain.find((row) => row.strike === selectedStrike)
+      ?.[side === 'CE' ? 'ce' : 'pe']?.securityId,
   );
   const optionCandles = optionSelectionMatches && live?.optionCandles?.length
     ? live.optionCandles

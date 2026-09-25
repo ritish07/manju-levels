@@ -183,9 +183,14 @@ async function history(
   currentDay = false,
 ) {
   const now = new Date();
+  const lookbackDays =
+    timeframe === 'D' || timeframe === 'M'
+      ? 370
+      : spec.instrument.startsWith('OPT')
+        ? 4
+        : 12;
   const from = new Date(
-    now.getTime() -
-      (timeframe === 'D' || timeframe === 'M' ? 370 : 12) * 86400000,
+    now.getTime() - lookbackDays * 86400000,
   );
   if (timeframe === 'D' || timeframe === 'M') {
     const raw = await dhan('/charts/historical', {
@@ -391,6 +396,7 @@ export async function GET(request: NextRequest) {
           optionsOnly: true,
           asset: 'STOCK',
           symbol: params.get('symbol') || '',
+          optionSecurityId,
           selectedStrike: wantedStrike,
           side: side.toUpperCase(),
           optionCandles,
@@ -492,6 +498,7 @@ export async function GET(request: NextRequest) {
           underlyingCandles,
           optionCandles,
           optionDayOpen: open,
+          optionSecurityId: contract?.securityId || 0,
           underlyingTimeframe,
           optionTimeframe,
           updatedAt: new Date().toISOString(),
@@ -537,7 +544,7 @@ export async function GET(request: NextRequest) {
         history(optionSpec, optionTimeframe), optionDayOpen(optionSpec),
       ]);
       return NextResponse.json({ connected: true, optionsOnly: true, asset,
-        selectedStrike: wantedStrike, side: side.toUpperCase(), optionCandles,
+        optionSecurityId, selectedStrike: wantedStrike, side: side.toUpperCase(), optionCandles,
         optionDayOpen: open, optionTimeframe, updatedAt: new Date().toISOString() },
         { headers: { 'Cache-Control': 'no-store' } });
     }
@@ -643,6 +650,7 @@ export async function GET(request: NextRequest) {
         underlyingCandles,
         optionCandles,
         optionDayOpen: open,
+        optionSecurityId: contract?.securityId || 0,
         underlyingTimeframe,
         optionTimeframe,
         updatedAt: new Date().toISOString(),
