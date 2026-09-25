@@ -1622,7 +1622,22 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
-    setChartsLoading(true);
+    const currentAtStart = liveRef.current;
+    const currentUnderlyingMatches = selectedStock
+      ? currentAtStart?.asset === 'STOCK' && currentAtStart.symbol === selectedStock.symbol
+      : currentAtStart?.asset === asset;
+    const currentChartsReady = Boolean(
+      currentUnderlyingMatches &&
+      currentAtStart?.underlyingTimeframe === underlyingTimeframe &&
+      currentAtStart?.underlyingCandles?.length &&
+      currentAtStart?.selectedStrike === selectedStrike &&
+      currentAtStart?.side === side &&
+      currentAtStart?.expiry === expiry &&
+      currentAtStart?.optionTimeframe === optionTimeframe &&
+      (currentAtStart?.optionCandles?.length ||
+        (selectedStock && !currentAtStart?.expiries?.length)),
+    );
+    setChartsLoading(!currentChartsReady);
     const load = async () => {
       try {
         const query = new URLSearchParams({

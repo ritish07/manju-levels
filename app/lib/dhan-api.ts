@@ -2,7 +2,7 @@ import { dhanHeaders, invalidateToken } from './dhan-auth';
 let queue: Promise<unknown> = Promise.resolve();
 let lastChain = 0;
 let lastQuote = 0;
-let chartQueue: Promise<unknown> = Promise.resolve();
+let chartStartQueue: Promise<unknown> = Promise.resolve();
 let lastChart = 0;
 const cache = new Map<string, {expires: number; promise: Promise<any>}>();
 export async function dhan(path: string, body: object, cacheMs?: number): Promise<any> {
@@ -11,13 +11,18 @@ export async function dhan(path: string, body: object, cacheMs?: number): Promis
   if (hit && hit.expires > Date.now()) return hit.promise;
   const isChart = path.startsWith('/charts/');
   const isQuote = path.startsWith('/marketfeed/');
-  const task = (isChart ? chartQueue : queue).catch(() => {}).then(async () => {
-    // Chart data has its own budget; option-chain throttling must not block clicks.
-    if (isChart) {
+  // Chart requests are start-rate-limited, but their network waits are allowed
+  // to overlap. Serializing the entire requests made a three-chart snapshot
+  // take up to three Dhan timeouts during an asset switch.
+  const gate = isChart
+    ? chartStartQueue.catch(() => {}).then(async () => {
       const delay = 250 - (Date.now() - lastChart);
       if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
       lastChart = Date.now();
-    }
+    })
+    : queue.catch(() => {});
+  if (isChart) chartStartQueue = gate;
+  const task = gate.then(async () => {
     if (path === '/optionchain') {
       const delay = 3100 - (Date.now() - lastChain);
       if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
@@ -43,8 +48,7 @@ export async function dhan(path: string, body: object, cacheMs?: number): Promis
       return data;
     }
   });
-  if (isChart) chartQueue = task;
-  else queue = task;
+  if (!isChart) queue = task;
   const ttl = cacheMs ?? (path.includes('charts') ? 15000 : path.includes('expiry') ? 300000 : 5000);
   if (ttl > 0) cache.set(key, { expires: Date.now() + ttl, promise: task });
   task.catch(() => cache.delete(key));
