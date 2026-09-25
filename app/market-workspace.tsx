@@ -1618,9 +1618,16 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (data.optionsOnly) {
           setLive((previous) => {
             if (!previous) return previous;
+            const sameOptionContract =
+              (selectedStock
+                ? previous.asset === 'STOCK' && previous.symbol === selectedStock.symbol
+                : previous.asset === asset) &&
+              previous.selectedStrike === data.selectedStrike &&
+              previous.side === data.side &&
+              previous.optionTimeframe === optionTimeframe;
             const optionCandles = mergeSnapshotCandles(
               data.optionCandles || [],
-              previous.optionTimeframe === optionTimeframe
+              sameOptionContract
                 ? previous.optionCandles || []
                 : [],
               optionTimeframe,
@@ -1735,7 +1742,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           const selectedLeg = previous.chain.find((row) => row.strike === selectedStrike)
             ?.[side === 'CE' ? 'ce' : 'pe'];
           const optionMatches = Boolean(
-            tick.optionSecurityId && selectedLeg?.securityId === tick.optionSecurityId,
+            previous.selectedStrike === selectedStrike &&
+            previous.side === side &&
+            tick.optionSecurityId &&
+            selectedLeg?.securityId === tick.optionSecurityId,
           );
           return {
             ...previous,
@@ -2302,6 +2312,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       onPointerEnter={() => row.ce && setHoveredOption({ key: `${strike}-CE`, securityId: row.ce.securityId })}
                       onPointerLeave={() => setHoveredOption((current) => current?.key === `${strike}-CE` ? null : current)}
                       onClick={() => {
+                        setChartsLoading(true);
                         setSelectedStrike(strike);
                         setSide('CE');
                         setLevelPopoverStrike(null);
@@ -2334,6 +2345,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       onPointerEnter={() => setLevelPopoverStrike(strike)}
                       onPointerLeave={() => setLevelPopoverStrike((current) => current === strike ? null : current)}
                       onClick={() => {
+                        setChartsLoading(true);
                         setSelectedStrike(strike);
                         setLevelPopoverStrike(strike);
                       }}
@@ -2358,6 +2370,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       onPointerEnter={() => row.pe && setHoveredOption({ key: `${strike}-PE`, securityId: row.pe.securityId })}
                       onPointerLeave={() => setHoveredOption((current) => current?.key === `${strike}-PE` ? null : current)}
                       onClick={() => {
+                        setChartsLoading(true);
                         setSelectedStrike(strike);
                         setSide('PE');
                         setLevelPopoverStrike(null);
