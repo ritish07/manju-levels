@@ -417,7 +417,7 @@ export async function GET(request: NextRequest) {
         dhan('/optionchain/expirylist', {
           UnderlyingScrip: stockSecurityId,
           UnderlyingSeg: stockSegment,
-        }).catch(() => ({ data: [] })),
+        }),
       ]);
       const spot = underlyingCandles.at(-1)?.close || 0;
       const dayOpen = stableDayOpen(
@@ -472,10 +472,9 @@ export async function GET(request: NextRequest) {
         segment: 'NSE_FNO',
         instrument: 'OPTSTK',
       } : null;
-      // On the first stock load, return the underlying and option chain first.
-      // The client immediately follows with the lightweight options-only call
-      // for the ATM contract, avoiding a long blank screen.
-      const [optionCandles, open] = optionSpec && wantedStrike > 0
+      // Include the ATM option chart in the first stock response. Requiring a
+      // second round trip left the option pane blank on initial stock loads.
+      const [optionCandles, open] = optionSpec
         ? await Promise.all([
             history(optionSpec, optionTimeframe),
             optionDayOpen(optionSpec),
