@@ -573,6 +573,7 @@ function Chart({
   const [yOffset, setYOffset] = useState(0);
   const [cross, setCross] = useState<{ x: number; y: number } | null>(null);
   const [drawingTool, setDrawingTool] = useState<DrawingTool>('CURSOR');
+  const [selectedDrawingId, setSelectedDrawingId] = useState<number | null>(null);
   const [draftDrawing, setDraftDrawing] = useState<ChartDrawing | null>(null);
   const drawingStart = useRef<DrawingPoint | null>(null);
   const drawingId = useRef(Date.now());
@@ -623,6 +624,19 @@ function Chart({
       stage.removeEventListener('gestureend', containGesture);
     };
   }, []);
+  useEffect(() => {
+    const removeSelected = (event: KeyboardEvent) => {
+      if ((event.key !== 'Delete' && event.key !== 'Backspace') || selectedDrawingId === null) return;
+      const target = event.target as HTMLElement;
+      if (target.matches('input, textarea, [contenteditable="true"]')) return;
+      event.preventDefault();
+      onDrawingsChange((items) => items.filter((item) => item.id !== selectedDrawingId));
+      setSelectedDrawingId(null);
+      setDrawingTool('CURSOR');
+    };
+    window.addEventListener('keydown', removeSelected);
+    return () => window.removeEventListener('keydown', removeSelected);
+  }, [onDrawingsChange, selectedDrawingId]);
   if (!candles.length) return <section className="chart-panel"><div className="chart-head">{title}</div><div className="chart-empty">Waiting for Dhan candles</div></section>;
   const width = size.width,
     height = size.height,
@@ -689,6 +703,7 @@ function Chart({
     : -1;
   const linkedCrossCandle = linkedCrossIndex >= 0 ? view[linkedCrossIndex] : null;
   const displayedCrossCandle = crossCandle || linkedCrossCandle;
+  const headerCandle = displayedCrossCandle || latest;
   const displayedCrossIndex = crossCandle ? crossIndex : linkedCrossIndex;
   const crossX = displayedCrossCandle
     ? padL + displayedCrossIndex * slot + slot / 2 + panShift
@@ -781,9 +796,9 @@ function Chart({
           ) : (
             <div className="chart-sub">
               {subtitle}{' '}
-              <span className={up ? 'positive' : 'negative'}>
-                O {formatPrice(latest.open)} H {formatPrice(latest.high)} L{' '}
-                {formatPrice(latest.low)} C {formatPrice(latest.close)}
+              <span className={headerCandle.close >= headerCandle.open ? 'positive' : 'negative'}>
+                O {formatPrice(headerCandle.open)} H {formatPrice(headerCandle.high)} L{' '}
+                {formatPrice(headerCandle.low)} C {formatPrice(headerCandle.close)}
               </span>
               {previousClose > 0 && (
                 <span className={priceChange >= 0 ? 'positive' : 'negative'}>
@@ -888,11 +903,17 @@ function Chart({
           ))}
           <button
             type="button"
-            aria-label="Clear drawings"
-            title="Clear drawings"
+            aria-label={selectedDrawingId === null ? 'Clear drawings' : 'Delete selected drawing'}
+            title={selectedDrawingId === null ? 'Clear drawings' : 'Delete selected drawing'}
             disabled={!drawings.length}
             onClick={() => {
-              onDrawingsChange([]);
+              onDrawingsChange((items) =>
+                selectedDrawingId === null
+                  ? []
+                  : items.filter((item) => item.id !== selectedDrawingId),
+              );
+              setSelectedDrawingId(null);
+              setDrawingTool('CURSOR');
               setDraftDrawing(null);
             }}
           >
@@ -926,6 +947,7 @@ function Chart({
                   ...items,
                   { id: drawingId.current++, type: 'HORIZONTAL', price: point.price },
                 ]);
+                setDrawingTool('CURSOR');
                 return;
               }
               if (drawingTool === 'TEXT') {
@@ -935,6 +957,7 @@ function Chart({
                     ...items,
                     { id: drawingId.current++, type: 'TEXT', point, text: text.trim() },
                   ]);
+                setDrawingTool('CURSOR');
                 return;
               }
               drawingStart.current = point;
@@ -1041,6 +1064,7 @@ function Chart({
               ]);
               setDraftDrawing(null);
               drawingStart.current = null;
+              setDrawingTool('CURSOR');
               return;
             }
             const activeDrag = drag.current;
@@ -1207,7 +1231,7 @@ function Chart({
             {[...drawings, ...(draftDrawing ? [draftDrawing] : [])].map((drawing) => {
               if (drawing.type === 'HORIZONTAL') {
                 const lineY = y(drawing.price);
-                return <g key={drawing.id}>
+                return <g key={drawing.id} className={selectedDrawingId === drawing.id ? 'selected-drawing' : ''} onPointerDown={(event) => { event.stopPropagation(); if (drawing.id >= 0) setSelectedDrawingId(drawing.id); }}>
                   <line x1={0} x2={plotW} y1={lineY} y2={lineY} />
                   <text x={12} y={lineY - 6}>{formatPrice(drawing.price)}</text>
                 </g>;
@@ -1215,7 +1239,8 @@ function Chart({
               if (drawing.type === 'TEXT') {
                 return <text
                   key={drawing.id}
-                  className="drawing-text"
+                  className={`drawing-text ${selectedDrawingId === drawing.id ? 'selected-drawing' : ''}`}
+                  onPointerDown={(event) => { event.stopPropagation(); if (drawing.id >= 0) setSelectedDrawingId(drawing.id); }}
                   x={drawingX(drawing.point.timestamp)}
                   y={y(drawing.point.price)}
                 >{drawing.text}</text>;
@@ -1225,14 +1250,14 @@ function Chart({
               const y1 = y(drawing.start.price);
               const y2 = y(drawing.end.price);
               if (drawing.type === 'TREND')
-                return <line key={drawing.id} x1={x1} y1={y1} x2={x2} y2={y2} />;
+                return <line key={drawing.id} className={selectedDrawingId === drawing.id ? 'selected-drawing' : ''} onPointerDown={(event) => { event.stopPropagation(); if (drawing.id >= 0) setSelectedDrawingId(drawing.id); }} x1={x1} y1={y1} x2={x2} y2={y2} />;
               const delta = drawing.end.price - drawing.start.price;
               const percent = drawing.start.price
                 ? (delta / drawing.start.price) * 100
                 : 0;
               const labelX = Math.max(48, Math.min(plotW - 48, (x1 + x2) / 2));
               const labelY = Math.max(18, Math.min(plotH - 12, (y1 + y2) / 2));
-              return <g key={drawing.id} className="scale-drawing">
+              return <g key={drawing.id} className={`scale-drawing ${selectedDrawingId === drawing.id ? 'selected-drawing' : ''}`} onPointerDown={(event) => { event.stopPropagation(); if (drawing.id >= 0) setSelectedDrawingId(drawing.id); }}>
                 <line x1={x1} y1={y1} x2={x2} y2={y2} />
                 <line x1={x1} y1={y1} x2={x2} y2={y1} />
                 <line x1={x2} y1={y1} x2={x2} y2={y2} />
@@ -1529,6 +1554,14 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [showLevels, setShowLevels] = useState(true);
   const [levelMode, setLevelMode] = useState<'INTRADAY' | 'WEEKLY'>('WEEKLY');
   const [showSpot, setShowSpot] = useState(true);
+  const [showBothOptions, setShowBothOptions] = useState(false);
+  const [oppositeOption, setOppositeOption] = useState<{
+    side: Side;
+    securityId: number;
+    candles: Candle[];
+    dayOpen: number;
+    previousClose: number;
+  } | null>(null);
   const [levelPopoverStrike, setLevelPopoverStrike] = useState<number | null>(null);
   const [hoveredOption, setHoveredOption] = useState<{ key: string; securityId: number } | null>(null);
   const [hoveredQuote, setHoveredQuote] = useState<(OptionQuote & { key: string }) | null>(null);
@@ -1537,8 +1570,11 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [activeChart, setActiveChart] = useState<'UNDERLYING' | 'OPTION'>('OPTION');
   const [linkedCrosshairTimestamp, setLinkedCrosshairTimestamp] = useState<number | null>(null);
   const [hoveredCrosshair, setHoveredCrosshair] = useState<SyncedCrosshair | null>(null);
-  const [underlyingDrawings, setUnderlyingDrawings] = useState<ChartDrawing[]>([]);
-  const [optionDrawings, setOptionDrawings] = useState<ChartDrawing[]>([]);
+  const [drawingBook, setDrawingBook] = useState<Record<string, ChartDrawing[]>>(() => {
+    if (typeof window === 'undefined') return {};
+    try { return JSON.parse(localStorage.getItem('manju-chart-drawings') || '{}'); }
+    catch { return {}; }
+  });
   const [chainPercent, setChainPercent] = useState(28);
   const [chartSplit, setChartSplit] = useState(50);
   const [live, setLive] = useState<LiveSnapshot | null>(null);
@@ -1555,6 +1591,22 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [symbolSearch, setSymbolSearch] = useState('');
   const [symbolFilter, setSymbolFilter] = useState<'ALL' | 'INDICES' | 'STOCKS'>('ALL');
   const meta = ASSETS[asset];
+  const underlyingDrawingKey = `underlying:${selectedStock?.securityId || asset}`;
+  const optionDrawingKey = `option:${selectedStock?.securityId || asset}:${expiry}:${selectedStrike}:${side}`;
+  const underlyingDrawings = drawingBook[underlyingDrawingKey] || [];
+  const optionDrawings = drawingBook[optionDrawingKey] || [];
+  const updateDrawings = (key: string): Dispatch<SetStateAction<ChartDrawing[]>> => (update) => {
+    setDrawingBook((book) => {
+      const current = book[key] || [];
+      const next = typeof update === 'function'
+        ? (update as (items: ChartDrawing[]) => ChartDrawing[])(current)
+        : update;
+      const changed = { ...book, [key]: next };
+      try { localStorage.setItem('manju-chart-drawings', JSON.stringify(changed)); }
+      catch { /* Browser storage can be unavailable in private mode. */ }
+      return changed;
+    });
+  };
   const displayShort = selectedStock?.symbol || meta.short;
   const currentSpot = live?.spot || (selectedStock ? 0 : meta.spot);
   const underlyingPreviousClose = live?.underlyingPreviousClose || 0;
@@ -1727,8 +1779,24 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             const expectedOptionPrice = data.chain?.find(
               (row: { strike: number }) => row.strike === data.selectedStrike,
             )?.[data.side === 'CE' ? 'ce' : 'pe']?.ltp || 0;
+            const mergedChain = sameUnderlying
+              ? (data.chain || []).map((row: { strike: number; ce: ChainLeg; pe: ChainLeg }) => {
+                  const prior = previous.chain.find((item) => item.strike === row.strike);
+                  const keepLive = (fresh: ChainLeg, old: ChainLeg): ChainLeg =>
+                    fresh && old && fresh.securityId === old.securityId
+                      ? { ...fresh, ltp: old.ltp || fresh.ltp }
+                      : fresh;
+                  return {
+                    ...row,
+                    ce: keepLive(row.ce, prior?.ce || null),
+                    pe: keepLive(row.pe, prior?.pe || null),
+                  };
+                })
+              : data.chain;
             return {
               ...data,
+              spot: sameUnderlying ? previous.spot || data.spot : data.spot,
+              chain: mergedChain,
               underlyingCandles: mergeSnapshotCandles(
                 data.underlyingCandles || [],
                 sameUnderlying && previous.underlyingTimeframe === underlyingTimeframe
@@ -1868,6 +1936,62 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       clearTimeout(timer);
     };
   }, [asset, expiry, optionTimeframe, selectedStock, selectedStrike, side, underlyingTimeframe]);
+  useEffect(() => {
+    if (!showBothOptions || !live || !selectedStrike || !expiry) {
+      setOppositeOption(null);
+      return;
+    }
+    const oppositeSide: Side = side === 'CE' ? 'PE' : 'CE';
+    const leg = live.chain.find((row) => row.strike === selectedStrike)
+      ?.[oppositeSide === 'CE' ? 'ce' : 'pe'];
+    if (!leg?.securityId) {
+      setOppositeOption(null);
+      return;
+    }
+    let active = true;
+    const controller = new AbortController();
+    const query = new URLSearchParams({
+      asset,
+      underlyingTimeframe,
+      optionTimeframe,
+      side: oppositeSide,
+      strike: String(selectedStrike),
+      expiry,
+      optionsOnly: '1',
+      optionSecurityId: String(leg.securityId),
+    });
+    if (selectedStock) {
+      query.set('securityId', String(selectedStock.securityId));
+      query.set('symbol', selectedStock.symbol);
+      query.set('segment', selectedStock.segment);
+      query.set('instrument', selectedStock.instrument);
+    }
+    fetch(`/manju/api/dhan/snapshot?${query}`, { signal: controller.signal, cache: 'no-store' })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Opposite option unavailable');
+        if (!active || data.optionSecurityId !== leg.securityId) return;
+        setOppositeOption({
+          side: oppositeSide,
+          securityId: leg.securityId,
+          candles: sanitizeLatestCandle(data.optionCandles || [], leg.ltp),
+          dayOpen: data.optionDayOpen || 0,
+          previousClose: leg.previousClose || 0,
+        });
+      })
+      .catch(() => { if (active) setOppositeOption(null); });
+    return () => { active = false; controller.abort(); };
+  }, [asset, expiry, live?.optionSecurityId, optionTimeframe, selectedStock, selectedStrike, showBothOptions, side]);
+  const oppositeLivePrice = showBothOptions && oppositeOption
+    ? live?.chain.find((row) => row.strike === selectedStrike)
+      ?.[oppositeOption.side === 'CE' ? 'ce' : 'pe']?.ltp || 0
+    : 0;
+  useEffect(() => {
+    if (!(oppositeLivePrice > 0)) return;
+    setOppositeOption((current) => current
+      ? { ...current, candles: applyLivePrice(current.candles, oppositeLivePrice, optionTimeframe) }
+      : current);
+  }, [oppositeLivePrice, optionTimeframe]);
   const mockStrikes = useMemo(
     () => Array.from({ length: 13 }, (_, i) => atm + (i - 6) * strikeStep),
     [atm, strikeStep],
@@ -1929,6 +2053,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     ...optionLevels,
     { value: optionOpen, label: 'OPEN', color: '#f28c18' },
   ];
+  const oppositeOptionLevels = makeOptionLevels(oppositeOption?.dayOpen || 0);
+  const oppositeOptionChartLevels = [
+    ...oppositeOptionLevels,
+    { value: oppositeOption?.dayOpen || 0, label: 'OPEN', color: '#f28c18' },
+  ];
+  const oppositeDrawingKey = `option:${selectedStock?.securityId || asset}:${expiry}:${selectedStrike}:${oppositeOption?.side || (side === 'CE' ? 'PE' : 'CE')}`;
+  const oppositeDrawings = drawingBook[oppositeDrawingKey] || [];
   const chainRows = live?.chain?.length
     ? live.chain.filter((row) => Math.abs(row.strike - atm) <= strikeStep * 6)
     : selectedStock
@@ -2179,6 +2310,21 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <span />
             Levels
           </button>
+          <button
+            className={`levels-toggle ${showBothOptions ? 'on' : ''}`}
+            role="switch"
+            aria-checked={showBothOptions}
+            title="Show CE and PE charts side by side"
+            onClick={() => {
+              setShowBothOptions((value) => {
+                if (!value) setShowSpot(false);
+                return !value;
+              });
+            }}
+          >
+            <span />
+            CE + PE
+          </button>
           <span
             className={`data-source ${live ? 'connected' : 'disconnected'}`}
             title={feedError}
@@ -2202,7 +2348,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       {!canViewPositions || appView === 'MARKET' ? <div
         className="workspace"
         style={{
-          gridTemplateColumns: showSpot
+          gridTemplateColumns: showSpot || showBothOptions
             ? `minmax(0, ${100 - chainPercent}fr) 6px minmax(0, ${chainPercent}fr)`
             : 'minmax(0, 50fr) 6px minmax(0, 50fr)',
         }}
@@ -2210,7 +2356,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         <div
           className="charts-grid"
           style={{
-            gridTemplateColumns: showSpot
+            gridTemplateColumns: showBothOptions
+              ? `repeat(${showSpot ? 3 : 2}, minmax(0, 1fr))`
+              : showSpot
               ? `minmax(0, ${chartSplit}fr) 6px minmax(0, ${100 - chartSplit}fr)`
               : 'minmax(0, 1fr)',
           }}
@@ -2239,9 +2387,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             hoveredCrosshair={hoveredCrosshair}
             onCrosshairHover={setHoveredCrosshair}
             drawings={underlyingDrawings}
-            onDrawingsChange={setUnderlyingDrawings}
+            onDrawingsChange={updateDrawings(underlyingDrawingKey)}
           />}
-          {showSpot && <ResizeHandle
+          {showSpot && !showBothOptions && <ResizeHandle
             onDrag={(delta) =>
               setChartSplit((value) =>
                 Math.min(
@@ -2281,9 +2429,31 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               hoveredCrosshair={hoveredCrosshair}
               onCrosshairHover={setHoveredCrosshair}
               drawings={optionDrawings}
-              onDrawingsChange={setOptionDrawings}
+              onDrawingsChange={updateDrawings(optionDrawingKey)}
             />
           )}
+          {showBothOptions && oppositeOption?.candles.length ? (
+            <Chart
+              key={`option-opposite-${selectedStock?.securityId || asset}-${expiry}-${selectedStrike}-${oppositeOption.side}-${optionTimeframe}`}
+              title={`${displayShort} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${oppositeOption.side}`}
+              subtitle={`${optionTimeframe} · NSE F&O`}
+              candles={oppositeOption.candles}
+              levels={showLevels ? oppositeOptionChartLevels : []}
+              timeframe={optionTimeframe}
+              onTimeframeChange={setOptionTimeframe}
+              showCandlePopover
+              previousClose={oppositeOption.previousClose}
+              accent={activeChart === 'OPTION'}
+              onActivate={() => setActiveChart('OPTION')}
+              darkMode={darkMode}
+              linkedCrosshairTimestamp={linkedCrosshairTimestamp}
+              onLinkedCrosshairChange={setLinkedCrosshairTimestamp}
+              hoveredCrosshair={hoveredCrosshair}
+              onCrosshairHover={setHoveredCrosshair}
+              drawings={oppositeDrawings}
+              onDrawingsChange={updateDrawings(oppositeDrawingKey)}
+            />
+          ) : null}
         </div>
         <ResizeHandle
           onDrag={(delta) =>
