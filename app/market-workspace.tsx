@@ -1057,10 +1057,17 @@ function Chart({
               );
           }}
           onPointerUp={(e) => {
-            if (draftDrawing && (draftDrawing.type === 'SCALE' || draftDrawing.type === 'TREND')) {
-              onDrawingsChange((items) => [
+            if (drawingStart.current && (drawingTool === 'SCALE' || drawingTool === 'TREND')) {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const end = pointFromPointer(e.clientX, e.clientY, rect);
+              if (end) onDrawingsChange((items) => [
                 ...items,
-                { ...draftDrawing, id: drawingId.current++ },
+                {
+                  id: drawingId.current++,
+                  type: drawingTool,
+                  start: drawingStart.current!,
+                  end,
+                },
               ]);
               setDraftDrawing(null);
               drawingStart.current = null;
