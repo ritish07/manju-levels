@@ -244,7 +244,20 @@ async function history(
     toDate: `${istDate(now)} 23:59:59`,
   });
   const candles = aggregate(normalize(raw, timeframe), factor, timeframe);
-  return limit ? candles.slice(-180) : candles;
+  // Keep enough history for the user to pan back through the full current
+  // session. The previous fixed 180-bar window made a 1-minute chart loaded
+  // after noon start around 12:15–12:30, so dragging could never reveal the
+  // 09:15 candles because they had already been discarded by the API route.
+  const visibleHistory: Record<string, number> = {
+    '1m': 750,
+    '3m': 500,
+    '5m': 450,
+    '15m': 300,
+    '30m': 240,
+    '1H': 180,
+    '4H': 180,
+  };
+  return limit ? candles.slice(-(visibleHistory[timeframe] || 180)) : candles;
 }
 
 // Prefer Dhan's official live OHLC open. Candle history is only a fallback
