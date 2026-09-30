@@ -25,6 +25,7 @@ import {
 
 type AssetKey = 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
 type Side = 'CE' | 'PE';
+type IndexWorkspaceView = 'ALL' | 'UNDERLYING' | 'OPTION' | 'CHAIN';
 type Timeframe = '1m' | '3m' | '5m' | '15m' | '30m' | '1H' | '4H' | 'D' | 'M';
 type Candle = {
   timestamp?: number;
@@ -46,6 +47,7 @@ type ChartDrawing =
 type ChainLeg = {
   ltp: number;
   oi: number;
+  volume: number;
   previousOi: number;
   previousClose: number;
   securityId: number;
@@ -487,6 +489,22 @@ function makeIntradayLevels(open: number, step: number): ChartLevel[] {
   ];
 }
 
+function makeStockLevels(open: number): ChartLevel[] {
+  if (!(open > 0)) return [];
+  const root = Math.sqrt(open);
+  const support = (root - 1) ** 2;
+  const resistance = (root + 1) ** 2;
+  const step = (resistance - support) / 15;
+  return Array.from({ length: 16 }, (_, index) => {
+    const lowerHalf = index < 8;
+    return {
+      value: support + index * step,
+      label: lowerHalf ? `S${8 - index}` : `R${index - 7}`,
+      color: lowerHalf ? '#2e9b67' : '#d94b52',
+    };
+  });
+}
+
 function ResizeHandle({ onDrag }: { onDrag: (deltaX: number) => void }) {
   const lastX = useRef<number | null>(null);
   return (
@@ -507,17 +525,6 @@ function ResizeHandle({ onDrag }: { onDrag: (deltaX: number) => void }) {
     >
       <span />
     </div>
-  );
-}
-
-function EmptyPane() {
-  return (
-    <section className="empty-panel">
-      <div>
-        <strong>No listed options for this stock</strong>
-        <span>Select an NSE F&amp;O stock to view its option chart and chain.</span>
-      </div>
-    </section>
   );
 }
 
@@ -1584,6 +1591,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   });
   const [chainPercent, setChainPercent] = useState(28);
   const [chartSplit, setChartSplit] = useState(50);
+  const [indexWorkspaceView, setIndexWorkspaceView] = useState<IndexWorkspaceView>('ALL');
   const [live, setLive] = useState<LiveSnapshot | null>(null);
   const [chartsLoading, setChartsLoading] = useState(true);
   const liveRef = useRef<LiveSnapshot | null>(null);
@@ -1689,12 +1697,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       currentUnderlyingMatches &&
       currentAtStart?.underlyingTimeframe === underlyingTimeframe &&
       currentAtStart?.underlyingCandles?.length &&
-      currentAtStart?.selectedStrike === selectedStrike &&
-      currentAtStart?.side === side &&
-      currentAtStart?.expiry === expiry &&
-      currentAtStart?.optionTimeframe === optionTimeframe &&
-      (currentAtStart?.optionCandles?.length ||
-        (selectedStock && !currentAtStart?.expiries?.length)),
+      (selectedStock || (
+        currentAtStart?.selectedStrike === selectedStrike &&
+        currentAtStart?.side === side &&
+        currentAtStart?.expiry === expiry &&
+        currentAtStart?.optionTimeframe === optionTimeframe &&
+        currentAtStart?.optionCandles?.length
+      )),
     );
     setChartsLoading(!currentChartsReady);
     const load = async () => {
@@ -1720,7 +1729,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           : existing?.asset === asset && existing.expiry === expiry;
         const changedContract = existing?.selectedStrike !== selectedStrike || existing?.side !== side;
         const underlyingAlreadyCurrent = existing?.underlyingTimeframe === underlyingTimeframe;
-        if (matchingFeed && underlyingAlreadyCurrent && contract && (changedContract || Date.now() - lastFullSnapshot.current < 20000)) {
+        if (!selectedStock && matchingFeed && underlyingAlreadyCurrent && contract && (changedContract || Date.now() - lastFullSnapshot.current < 20000)) {
           query.set('optionsOnly', '1');
           query.set('optionSecurityId', String(contract.securityId));
         }
@@ -1823,9 +1832,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           });
           const underlyingReady = (data.underlyingCandles || []).length > 0;
           const optionReady = (data.optionCandles || []).length > 0;
-          const hasNoListedOptions =
-            Boolean(selectedStock) && Array.isArray(data.expiries) && !data.expiries.length;
-          if (underlyingReady && (optionReady || hasNoListedOptions))
+          if (underlyingReady && (Boolean(selectedStock) || optionReady))
             setChartsLoading(false);
         }
         // Keep the visible strike synchronized with the exact contract Dhan
@@ -1860,7 +1867,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     };
   }, [asset, underlyingTimeframe, optionTimeframe, side, selectedStrike, expiry, selectedStock]);
   useEffect(() => {
-    if (!expiry || !selectedStrike) return;
+    if (selectedStock || !expiry || !selectedStrike) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       const current = liveRef.current;
@@ -1877,9 +1884,12 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (leg?.securityId)
           candidates.push({ strike, side: wantedSide, securityId: leg.securityId });
       };
-      add(selectedStrike, side === 'CE' ? 'PE' : 'CE');
+      const oppositeSide: Side = side === 'CE' ? 'PE' : 'CE';
+      add(selectedStrike, oppositeSide);
       add(selectedStrike - step, side);
       add(selectedStrike + step, side);
+      add(selectedStrike - step, oppositeSide);
+      add(selectedStrike + step, oppositeSide);
       for (const candidate of candidates) {
         const query = new URLSearchParams({
           asset,
@@ -1892,12 +1902,6 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           optionSecurityId: String(candidate.securityId),
           prefetch: '1',
         });
-        if (selectedStock) {
-          query.set('securityId', String(selectedStock.securityId));
-          query.set('symbol', selectedStock.symbol);
-          query.set('segment', selectedStock.segment);
-          query.set('instrument', selectedStock.instrument);
-        }
         void fetch(`/manju/api/dhan/snapshot?${query}`, {
           signal: controller.signal,
           cache: 'no-store',
@@ -1906,6 +1910,28 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     }, 1800);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [asset, expiry, optionTimeframe, selectedStock, selectedStrike, side, underlyingTimeframe]);
+  useEffect(() => {
+    if (selectedStock || !live?.connected) return;
+    const controller = new AbortController();
+    const otherAssets = (Object.keys(ASSETS) as AssetKey[]).filter((key) => key !== asset);
+    const timers = otherAssets.map((nextAsset, index) => setTimeout(() => {
+      const query = new URLSearchParams({
+        asset: nextAsset,
+        underlyingTimeframe,
+        optionTimeframe,
+        side,
+        strike: '0',
+      });
+      void fetch(`/manju/api/dhan/snapshot?${query}`, {
+        signal: controller.signal,
+        cache: 'no-store',
+      }).catch(() => {});
+    }, 3500 + index * 4500));
+    return () => {
+      timers.forEach(clearTimeout);
+      controller.abort();
+    };
+  }, [asset, live?.connected, optionTimeframe, selectedStock, side, underlyingTimeframe]);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -1994,7 +2020,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     };
   }, [asset, expiry, optionTimeframe, selectedStock, selectedStrike, side, underlyingTimeframe]);
   useEffect(() => {
-    if (!showBothOptions || !live || !selectedStrike || !expiry) {
+    if (selectedStock || indexWorkspaceView !== 'ALL' || !showBothOptions || !live || !selectedStrike || !expiry) {
       setOppositeOption(null);
       return;
     }
@@ -2017,12 +2043,6 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       optionsOnly: '1',
       optionSecurityId: String(leg.securityId),
     });
-    if (selectedStock) {
-      query.set('securityId', String(selectedStock.securityId));
-      query.set('symbol', selectedStock.symbol);
-      query.set('segment', selectedStock.segment);
-      query.set('instrument', selectedStock.instrument);
-    }
     fetch(`/manju/api/dhan/snapshot?${query}`, { signal: controller.signal, cache: 'no-store' })
       .then(async (response) => {
         const data = await response.json();
@@ -2038,7 +2058,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       })
       .catch(() => { if (active) setOppositeOption(null); });
     return () => { active = false; controller.abort(); };
-  }, [asset, expiry, live?.optionSecurityId, optionTimeframe, selectedStock, selectedStrike, showBothOptions, side]);
+  }, [asset, expiry, indexWorkspaceView, live?.optionSecurityId, optionTimeframe, selectedStock, selectedStrike, showBothOptions, side]);
   const oppositeLivePrice = showBothOptions && oppositeOption
     ? live?.chain.find((row) => row.strike === selectedStrike)
       ?.[oppositeOption.side === 'CE' ? 'ce' : 'pe']?.ltp || 0
@@ -2095,11 +2115,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const weeklyOpen = live?.weeklyOpen || meta.weeklyOpen;
   const dayOpen = live?.dayOpen || meta.spot;
   const underlyingLevels = selectedStock
-    ? []
+    ? makeStockLevels(dayOpen)
     : levelMode === 'WEEKLY'
       ? makeWeeklyLevels(weeklyOpen)
       : makeIntradayLevels(dayOpen, meta.intradayStep);
-  const underlyingOpen = levelMode === 'WEEKLY' ? weeklyOpen : dayOpen;
+  const underlyingOpen = selectedStock
+    ? dayOpen
+    : levelMode === 'WEEKLY' ? weeklyOpen : dayOpen;
   const underlyingChartLevels = [
     ...underlyingLevels,
     { value: underlyingOpen, label: 'OPEN', color: '#f28c18' },
@@ -2202,6 +2224,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     if (stock) {
       setSelectedStock(stock);
       setShowSpot(true);
+      setShowBothOptions(false);
       setLive(null);
       setSelectedStrike(0);
       setExpiry('');
@@ -2256,14 +2279,19 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       clearTimeout(timer);
     };
   }, [asset, hoveredOption, selectedStock]);
+  const showChartsArea = Boolean(selectedStock) || indexWorkspaceView !== 'CHAIN';
+  const showChainArea = Boolean(selectedStock) || indexWorkspaceView === 'ALL' || indexWorkspaceView === 'CHAIN';
+  const showUnderlyingPane = Boolean(selectedStock) || indexWorkspaceView === 'UNDERLYING' || (indexWorkspaceView === 'ALL' && showSpot);
+  const showOptionPane = !selectedStock && (indexWorkspaceView === 'ALL' || indexWorkspaceView === 'OPTION');
+  const showOppositePane = showOptionPane && indexWorkspaceView === 'ALL' && showBothOptions;
   return (
     <main className={`app-shell ${darkMode ? 'dark' : ''}`} aria-busy={chartsLoading}>
       {chartsLoading && appView === 'MARKET' && (
         <div className="charts-loading-overlay" role="status" aria-live="polite">
           <div className="charts-loading-card">
             <span className="charts-loading-spinner" aria-hidden="true" />
-            <strong>Loading both charts</strong>
-            <small>Fetching the correct candles from Dhan…</small>
+            <strong>Loading market data</strong>
+            <small>Fetching the correct candles and option chain from Dhan…</small>
           </div>
         </div>
       )}
@@ -2347,7 +2375,21 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           </span>
         </div>
         <div className="header-actions">
-          <button
+          {!selectedStock && <label className="workspace-view-picker" title="Choose which workspace panel fills the screen">
+            <span>VIEW</span>
+            <select
+              value={indexWorkspaceView}
+              onChange={(event) => setIndexWorkspaceView(event.target.value as IndexWorkspaceView)}
+              aria-label="Workspace view"
+            >
+              <option value="ALL">All panels</option>
+              <option value="UNDERLYING">Underlying only</option>
+              <option value="OPTION">Option chart only</option>
+              <option value="CHAIN">Option chain only</option>
+            </select>
+            <ChevronDown />
+          </label>}
+          {(selectedStock || indexWorkspaceView === 'ALL') && <button
             className={`levels-toggle ${showSpot ? 'on' : ''}`}
             role="switch"
             aria-checked={showSpot}
@@ -2357,7 +2399,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           >
             <span />
             Underlying
-          </button>
+          </button>}
           <button
             className={`levels-toggle ${showLevels ? 'on' : ''}`}
             role="switch"
@@ -2367,7 +2409,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <span />
             Levels
           </button>
-          <button
+          {!selectedStock && indexWorkspaceView === 'ALL' && <button
             className={`levels-toggle ${showBothOptions ? 'on' : ''}`}
             role="switch"
             aria-checked={showBothOptions}
@@ -2381,7 +2423,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           >
             <span />
             CE + PE
-          </button>
+          </button>}
           <span
             className={`data-source ${live ? 'connected' : 'disconnected'}`}
             title={feedError}
@@ -2405,29 +2447,31 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       {!canViewPositions || appView === 'MARKET' ? <div
         className="workspace"
         style={{
-          gridTemplateColumns: showSpot || showBothOptions
+          gridTemplateColumns: showChartsArea && showChainArea
             ? `minmax(0, ${100 - chainPercent}fr) 6px minmax(0, ${chainPercent}fr)`
-            : 'minmax(0, 50fr) 6px minmax(0, 50fr)',
+            : 'minmax(0, 1fr)',
         }}
       >
-        <div
+        {showChartsArea && <div
           className="charts-grid"
           style={{
-            gridTemplateColumns: showBothOptions
+            gridTemplateColumns: selectedStock || indexWorkspaceView !== 'ALL'
+              ? 'minmax(0, 1fr)'
+              : showBothOptions
               ? `repeat(${showSpot ? 3 : 2}, minmax(0, 1fr))`
               : showSpot
               ? `minmax(0, ${chartSplit}fr) 6px minmax(0, ${100 - chartSplit}fr)`
               : 'minmax(0, 1fr)',
           }}
         >
-          {showSpot && <Chart
+          {showUnderlyingPane && <Chart
             key={`underlying-${selectedStock?.securityId || asset}-${underlyingTimeframe}`}
             title={
               selectedStock
                 ? `${selectedStock.symbol} · ${selectedStock.name}`
                 : meta.name
             }
-            subtitle={`${underlyingTimeframe} · ${selectedStock ? 'NSE' : `NSE · ${levelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(levelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}`}
+            subtitle={`${underlyingTimeframe} · ${selectedStock ? `NSE · Day open ${formatPrice(dayOpen)}` : `NSE · ${levelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(levelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}`}
             candles={underlying}
             levels={showLevels ? underlyingChartLevels : []}
             previousClose={underlyingPreviousClose}
@@ -2446,7 +2490,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             drawings={underlyingDrawings}
             onDrawingsChange={updateDrawings(underlyingDrawingKey)}
           />}
-          {showSpot && !showBothOptions && <ResizeHandle
+          {!selectedStock && indexWorkspaceView === 'ALL' && showSpot && !showBothOptions && <ResizeHandle
             onDrag={(delta) =>
               setChartSplit((value) =>
                 Math.min(
@@ -2465,11 +2509,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               )
             }
           />}
-          {selectedStock && live && !live.expiries?.length ? (
-            <EmptyPane />
-          ) : (
+          {showOptionPane && (
             <Chart
-              key={`option-${selectedStock?.securityId || asset}-${expiry}-${selectedStrike}-${side}-${optionTimeframe}`}
+              key={`option-${asset}-${expiry}-${selectedStrike}-${side}-${optionTimeframe}`}
               title={`${displayShort} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
               subtitle={`${optionTimeframe} · NSE F&O`}
               candles={optionCandles}
@@ -2489,9 +2531,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               onDrawingsChange={updateDrawings(optionDrawingKey)}
             />
           )}
-          {showBothOptions && oppositeOption?.candles.length ? (
+          {showOppositePane && oppositeOption?.candles.length ? (
             <Chart
-              key={`option-opposite-${selectedStock?.securityId || asset}-${expiry}-${selectedStrike}-${oppositeOption.side}-${optionTimeframe}`}
+              key={`option-opposite-${asset}-${expiry}-${selectedStrike}-${oppositeOption.side}-${optionTimeframe}`}
               title={`${displayShort} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${oppositeOption.side}`}
               subtitle={`${optionTimeframe} · NSE F&O`}
               candles={oppositeOption.candles}
@@ -2511,8 +2553,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               onDrawingsChange={updateDrawings(oppositeDrawingKey)}
             />
           ) : null}
-        </div>
-        <ResizeHandle
+        </div>}
+        {showChartsArea && showChainArea && <ResizeHandle
           onDrag={(delta) =>
             setChainPercent((value) =>
               Math.min(
@@ -2524,8 +2566,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               ),
             )
           }
-        />
-        <aside className="chain-panel">
+        />}
+        {showChainArea && <aside className="chain-panel">
           {selectedStock && live && !live.expiries?.length && (
             <div className="stock-chain-disabled">
               <strong>No listed options for {selectedStock.symbol}</strong>
@@ -2581,9 +2623,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           </div>
           <div className={`chain-table view-${chainView.toLowerCase()}`}>
             <div className="chain-row chain-labels">
-              <span>CALL LTP</span>
+              <span>{selectedStock ? 'CALL OI / VOL' : 'CALL LTP'}</span>
               <span>STRIKE</span>
-              <span>PUT LTP</span>
+              <span>{selectedStock ? 'PUT OI / VOL' : 'PUT LTP'}</span>
               <span>OI PROFILE</span>
             </div>
             <div className="chain-scroll">
@@ -2613,7 +2655,11 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                     className={`chain-row ${isAtm ? 'atm' : ''}`}
                     key={strike}
                   >
-                    <button
+                    {selectedStock ? <div className="stock-option-metric call-data">
+                      <b>{formatOi(oi.ce)}</b>
+                      <small>OI</small>
+                      <small>Vol {formatOi(row.ce?.volume || 0)}</small>
+                    </div> : <button
                       className={`option-price ${
                         selectedStrike === strike && side === 'CE'
                           ? 'selected'
@@ -2648,15 +2694,17 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                           </> : <em>Loading Dhan quote…</em>}
                         </span>
                       )}
-                    </button>
+                    </button>}
                     <button
                       className="strike"
                       data-strike-popover
                       onPointerEnter={() => setLevelPopoverStrike(strike)}
                       onPointerLeave={() => setLevelPopoverStrike((current) => current === strike ? null : current)}
                       onClick={() => {
-                        setChartsLoading(true);
-                        setSelectedStrike(strike);
+                        if (!selectedStock) {
+                          setChartsLoading(true);
+                          setSelectedStrike(strike);
+                        }
                         setLevelPopoverStrike(strike);
                       }}
                     >
@@ -2671,7 +2719,11 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                         </span>
                       )}
                     </button>
-                    <button
+                    {selectedStock ? <div className="stock-option-metric put-data">
+                      <b>{formatOi(oi.pe)}</b>
+                      <small>OI</small>
+                      <small>Vol {formatOi(row.pe?.volume || 0)}</small>
+                    </div> : <button
                       className={`option-price ${
                         selectedStrike === strike && side === 'PE'
                           ? 'selected'
@@ -2706,7 +2758,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                           </> : <em>Loading Dhan quote…</em>}
                         </span>
                       )}
-                    </button>
+                    </button>}
                     <button
                       type="button"
                       className="oi-profile"
@@ -2755,7 +2807,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               </b>
             </div>
           </div>
-        </aside>
+        </aside>}
       </div> : (
         <PositionsView
           mode={paperMode}

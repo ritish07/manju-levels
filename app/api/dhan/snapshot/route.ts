@@ -159,10 +159,21 @@ function aggregate(
       ...c,
       time: timeLabel(c.timestamp, timeframe),
     }));
+  const buckets = new Map<string, Candle[]>();
+  const bucketFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  for (const candle of candles) {
+    const parts = bucketFormatter.formatToParts(new Date(candle.timestamp * 1000));
+    const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const minutes = Number(value.hour) * 60 + Number(value.minute);
+    const bucket = Math.floor(Math.max(0, minutes - (9 * 60 + 15)) / factor);
+    const key = `${value.year}-${value.month}-${value.day}:${bucket}`;
+    buckets.set(key, [...(buckets.get(key) || []), candle]);
+  }
   const result: Candle[] = [];
-  for (let i = 0; i < candles.length; i += factor) {
-    const group = candles.slice(i, i + factor);
-    if (!group.length) continue;
+  for (const group of buckets.values()) {
     result.push({
       timestamp: group[0].timestamp,
       open: group[0].open,
@@ -224,26 +235,29 @@ async function history(
       }))
       .slice(-180);
   }
-  const config: Record<string, [string, number]> = {
-    '1m': ['1', 1],
-    '3m': ['1', 3],
-    '5m': ['5', 1],
-    '15m': ['15', 1],
-    '30m': ['5', 6],
-    '1H': ['60', 1],
-    '4H': ['60', 4],
+  // Keep one canonical one-minute history in the Dhan cache and derive every
+  // intraday timeframe locally. A timeframe switch therefore reuses the same
+  // network response instead of downloading a second copy of the chart.
+  const config: Record<string, number> = {
+    '1m': 1,
+    '3m': 3,
+    '5m': 5,
+    '15m': 15,
+    '30m': 30,
+    '1H': 60,
+    '4H': 240,
   };
-  const [interval, factor] = config[timeframe] || config['5m'];
+  const factor = config[timeframe] || config['5m'];
   const raw = await dhan('/charts/intraday', {
     securityId: String(spec.securityId),
     exchangeSegment: spec.segment,
     instrument: spec.instrument,
-    interval,
+    interval: '1',
     oi: spec.segment !== 'IDX_I',
     fromDate: `${istDate(currentDay ? now : from)} 09:15:00`,
     toDate: `${istDate(now)} 23:59:59`,
   });
-  const candles = aggregate(normalize(raw, timeframe), factor, timeframe);
+  const candles = aggregate(normalize(raw, '1m'), factor, timeframe);
   // Keep enough history for the user to pan back through the full current
   // session. The previous fixed 180-bar window made a 1-minute chart loaded
   // after noon start around 12:15–12:30, so dragging could never reveal the
@@ -469,6 +483,7 @@ export async function GET(request: NextRequest) {
             ce: legs.ce ? {
               ltp: Number(legs.ce.last_price || 0),
               oi: Number(legs.ce.oi || 0),
+              volume: Number(legs.ce.volume || 0),
               previousOi: Number(legs.ce.previous_oi || 0),
               previousClose: Number(legs.ce.previous_close_price || 0),
               securityId: Number(legs.ce.security_id),
@@ -476,6 +491,7 @@ export async function GET(request: NextRequest) {
             pe: legs.pe ? {
               ltp: Number(legs.pe.last_price || 0),
               oi: Number(legs.pe.oi || 0),
+              volume: Number(legs.pe.volume || 0),
               previousOi: Number(legs.pe.previous_oi || 0),
               previousClose: Number(legs.pe.previous_close_price || 0),
               securityId: Number(legs.pe.security_id),
@@ -491,19 +507,6 @@ export async function GET(request: NextRequest) {
         ? chain.find((row) => row.strike === wantedStrike) || nearestAtm
         : nearestAtm;
       const contract = selected?.[side];
-      const optionSpec = contract ? {
-        securityId: contract.securityId,
-        segment: 'NSE_FNO',
-        instrument: 'OPTSTK',
-      } : null;
-      // Include the ATM option chart in the first stock response. Requiring a
-      // second round trip left the option pane blank on initial stock loads.
-      const [optionCandles, open] = optionSpec
-        ? await Promise.all([
-            history(optionSpec, optionTimeframe),
-            optionDayOpen(optionSpec),
-          ])
-        : [[], 0];
       return NextResponse.json(
         {
           connected: true,
@@ -519,8 +522,8 @@ export async function GET(request: NextRequest) {
           selectedStrike: selected?.strike || 0,
           side: side.toUpperCase(),
           underlyingCandles,
-          optionCandles,
-          optionDayOpen: open,
+          optionCandles: [],
+          optionDayOpen: 0,
           optionSecurityId: contract?.securityId || 0,
           underlyingTimeframe,
           optionTimeframe,
@@ -605,6 +608,7 @@ export async function GET(request: NextRequest) {
           ? {
               ltp: Number(legs.ce.last_price || 0),
               oi: Number(legs.ce.oi || 0),
+              volume: Number(legs.ce.volume || 0),
               previousOi: Number(legs.ce.previous_oi || 0),
               previousClose: Number(legs.ce.previous_close_price || 0),
               securityId: Number(legs.ce.security_id),
@@ -614,6 +618,7 @@ export async function GET(request: NextRequest) {
           ? {
               ltp: Number(legs.pe.last_price || 0),
               oi: Number(legs.pe.oi || 0),
+              volume: Number(legs.pe.volume || 0),
               previousOi: Number(legs.pe.previous_oi || 0),
               previousClose: Number(legs.pe.previous_close_price || 0),
               securityId: Number(legs.pe.security_id),
