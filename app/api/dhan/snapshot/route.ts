@@ -380,6 +380,7 @@ async function marketOhlc(spec: { securityId: number; segment: string }) {
 }
 
 export async function GET(request: NextRequest) {
+  const requestStarted = performance.now();
   try {
     const params = request.nextUrl.searchParams;
     const asset = (params.get('asset') || 'NIFTY') as Asset;
@@ -400,6 +401,13 @@ export async function GET(request: NextRequest) {
           segment: 'NSE_FNO',
           instrument: 'OPTSTK',
         };
+        if (params.get('prefetch') === '1') {
+          await history(optionSpec, optionTimeframe);
+          return new NextResponse(null, { status: 204, headers: {
+            'Cache-Control': 'no-store',
+            'Server-Timing': `prefetch;dur=${(performance.now() - requestStarted).toFixed(1)}`,
+          } });
+        }
         const [optionCandles, open] = await Promise.all([
           history(optionSpec, optionTimeframe),
           optionDayOpen(optionSpec),
@@ -416,7 +424,10 @@ export async function GET(request: NextRequest) {
           optionDayOpen: open,
           optionTimeframe,
           updatedAt: new Date().toISOString(),
-        }, { headers: { 'Cache-Control': 'no-store' } });
+        }, { headers: {
+          'Cache-Control': 'no-store',
+          'Server-Timing': `snapshot;dur=${(performance.now() - requestStarted).toFixed(1)}`,
+        } });
       }
       const stockSpec = {
         securityId: stockSecurityId,
@@ -552,13 +563,23 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: 'Invalid option contract' }, { status: 400 });
       const optionSpec = { securityId: optionSecurityId,
         segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO', instrument: 'OPTIDX' };
+      if (params.get('prefetch') === '1') {
+        await history(optionSpec, optionTimeframe);
+        return new NextResponse(null, { status: 204, headers: {
+          'Cache-Control': 'no-store',
+          'Server-Timing': `prefetch;dur=${(performance.now() - requestStarted).toFixed(1)}`,
+        } });
+      }
       const [optionCandles, open] = await Promise.all([
         history(optionSpec, optionTimeframe), optionDayOpen(optionSpec),
       ]);
       return NextResponse.json({ connected: true, optionsOnly: true, asset,
         optionSecurityId, selectedStrike: wantedStrike, side: side.toUpperCase(), optionCandles,
         optionDayOpen: open, optionTimeframe, updatedAt: new Date().toISOString() },
-        { headers: { 'Cache-Control': 'no-store' } });
+        { headers: {
+          'Cache-Control': 'no-store',
+          'Server-Timing': `snapshot;dur=${(performance.now() - requestStarted).toFixed(1)}`,
+        } });
     }
     const expiryResponse = await dhan('/optionchain/expirylist', {
       UnderlyingScrip: spec.securityId,

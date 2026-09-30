@@ -61,8 +61,12 @@ export async function dhan(path: string, body: object, cacheMs?: number): Promis
       return data;
     }
   });
-  const ttl = cacheMs ?? (path.includes('charts') ? 15000 : path.includes('expiry') ? 300000 : path === '/optionchain' ? 12000 : 5000);
-  const staleTtl = path.includes('charts') ? 120000 : path === '/optionchain' ? 45000 : ttl;
+  // Historical candles are immutable except for the currently-forming bar,
+  // which the lightweight tick endpoint updates in the browser. Keep chart
+  // history warm so revisiting or prefetching a contract does not repeatedly
+  // pay Dhan's REST latency.
+  const ttl = cacheMs ?? (path.includes('charts') ? 300000 : path.includes('expiry') ? 300000 : path === '/optionchain' ? 12000 : 5000);
+  const staleTtl = path.includes('charts') ? 1800000 : path === '/optionchain' ? 45000 : ttl;
   if (ttl > 0) cache.set(key, { expires: Date.now() + ttl, staleExpires: Date.now() + staleTtl, promise: task });
   task.catch(() => {
     if (cache.get(key)?.promise === task) cache.delete(key);

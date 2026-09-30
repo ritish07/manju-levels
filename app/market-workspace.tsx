@@ -1846,7 +1846,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         // Live prices continue through the lightweight tick endpoint. Refresh
         // history less often so strike changes are not queued behind repeated
         // full candle downloads at Dhan.
-        if (active) timer = setTimeout(load, 15000);
+        // Tick polling updates the live candle. A slower reconciliation keeps
+        // completed history accurate without continuously queueing expensive
+        // Dhan chart downloads behind a user's strike change.
+        if (active) timer = setTimeout(load, 300000);
       }
     };
     load();
@@ -1856,6 +1859,53 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       clearTimeout(timer);
     };
   }, [asset, underlyingTimeframe, optionTimeframe, side, selectedStrike, expiry, selectedStock]);
+  useEffect(() => {
+    if (!expiry || !selectedStrike) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const current = liveRef.current;
+      if (!current?.chain?.length) return;
+      const steps = current.chain
+        .slice(1)
+        .map((row, index) => row.strike - current.chain[index].strike)
+        .filter((value) => value > 0);
+      const step = steps.length ? Math.min(...steps) : ASSETS[asset].step;
+      const candidates: { strike: number; side: Side; securityId: number }[] = [];
+      const add = (strike: number, wantedSide: Side) => {
+        const leg = current.chain.find((row) => row.strike === strike)
+          ?.[wantedSide === 'CE' ? 'ce' : 'pe'];
+        if (leg?.securityId)
+          candidates.push({ strike, side: wantedSide, securityId: leg.securityId });
+      };
+      add(selectedStrike, side === 'CE' ? 'PE' : 'CE');
+      add(selectedStrike - step, side);
+      add(selectedStrike + step, side);
+      for (const candidate of candidates) {
+        const query = new URLSearchParams({
+          asset,
+          underlyingTimeframe,
+          optionTimeframe,
+          side: candidate.side,
+          strike: String(candidate.strike),
+          expiry,
+          optionsOnly: '1',
+          optionSecurityId: String(candidate.securityId),
+          prefetch: '1',
+        });
+        if (selectedStock) {
+          query.set('securityId', String(selectedStock.securityId));
+          query.set('symbol', selectedStock.symbol);
+          query.set('segment', selectedStock.segment);
+          query.set('instrument', selectedStock.instrument);
+        }
+        void fetch(`/manju/api/dhan/snapshot?${query}`, {
+          signal: controller.signal,
+          cache: 'no-store',
+        }).catch(() => {});
+      }
+    }, 1800);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [asset, expiry, optionTimeframe, selectedStock, selectedStrike, side, underlyingTimeframe]);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
