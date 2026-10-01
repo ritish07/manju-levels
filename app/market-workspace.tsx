@@ -501,13 +501,15 @@ function makeStockIntradayLevels(open: number): ChartLevel[] {
   const root = Math.sqrt(open);
   const support = (root - 1) ** 2;
   const resistance = (root + 1) ** 2;
-  const step = (resistance - support) / 15;
-  return Array.from({ length: 16 }, (_, index) => {
+  // Sixteen equal parts have seventeen boundary levels, including both ends.
+  const step = (resistance - support) / 16;
+  return Array.from({ length: 17 }, (_, index) => {
     const lowerHalf = index < 8;
+    const upperHalf = index > 8;
     return {
       value: support + index * step,
-      label: lowerHalf ? `S${8 - index}` : `R${index - 7}`,
-      color: lowerHalf ? '#2e9b67' : '#d94b52',
+      label: lowerHalf ? `S${8 - index}` : upperHalf ? `R${index - 8}` : 'MID',
+      color: lowerHalf ? '#2e9b67' : upperHalf ? '#d94b52' : '#718096',
     };
   });
 }
@@ -539,14 +541,15 @@ function makeOtherIndexIntradayLevels(open: number): ChartLevel[] {
   const root = Math.sqrt(open);
   const support = (root - 1) ** 2;
   const resistance = (root + 1) ** 2;
-  // Eighteen displayed levels, including the lower and upper boundaries.
-  const step = (resistance - support) / 17;
-  return Array.from({ length: 18 }, (_, index) => {
+  // Eighteen equal parts have nineteen boundary levels, including both ends.
+  const step = (resistance - support) / 18;
+  return Array.from({ length: 19 }, (_, index) => {
     const lowerHalf = index < 9;
+    const upperHalf = index > 9;
     return {
       value: support + index * step,
-      label: lowerHalf ? `S${9 - index}` : `R${index - 8}`,
-      color: lowerHalf ? '#2e9b67' : '#d94b52',
+      label: lowerHalf ? `S${9 - index}` : upperHalf ? `R${index - 9}` : 'MID',
+      color: lowerHalf ? '#2e9b67' : upperHalf ? '#d94b52' : '#718096',
     };
   });
 }
