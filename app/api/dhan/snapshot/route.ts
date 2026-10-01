@@ -240,9 +240,9 @@ async function history(
       }))
       .slice(-180);
   }
-  // Keep one canonical one-minute history in the Dhan cache and derive every
-  // intraday timeframe locally. A timeframe switch therefore reuses the same
-  // network response instead of downloading a second copy of the chart.
+  // Ask Dhan for the coarsest native interval that can reproduce the selected
+  // timeframe. Downloading 14 days of one-minute bars for a 30-minute chart
+  // was the largest avoidable source of chart latency.
   const config: Record<string, number> = {
     '1m': 1,
     '3m': 3,
@@ -252,17 +252,20 @@ async function history(
     '1H': 60,
     '4H': 240,
   };
-  const factor = config[timeframe] || config['5m'];
+  const targetMinutes = config[timeframe] || config['5m'];
+  const sourceMinutes = targetMinutes >= 60 ? 60 : targetMinutes >= 15 ? 15 : targetMinutes >= 5 ? 5 : 1;
+  // aggregate() buckets by exchange-clock minutes, not source-bar count.
+  const factor = targetMinutes;
   const raw = await dhan('/charts/intraday', {
     securityId: String(spec.securityId),
     exchangeSegment: spec.segment,
     instrument: spec.instrument,
-    interval: '1',
+    interval: String(sourceMinutes),
     oi: spec.segment !== 'IDX_I',
     fromDate: `${istDate(currentDay ? now : from)} 09:15:00`,
     toDate: `${istDate(now)} 23:59:59`,
   });
-  const candles = aggregate(normalize(raw, '1m'), factor, timeframe);
+  const candles = aggregate(normalize(raw, `${sourceMinutes}m`), factor, timeframe);
   // Keep enough history for the user to pan back through the full current
   // session. The previous fixed 180-bar window made a 1-minute chart loaded
   // after noon start around 12:15–12:30, so dragging could never reveal the
@@ -401,6 +404,9 @@ async function marketOhlc(spec: { securityId: number; segment: string }) {
 
 export async function GET(request: NextRequest) {
   const requestStarted = performance.now();
+  const traceId = request.headers.get('x-manju-trace') || request.nextUrl.searchParams.get('trace') || crypto.randomUUID().slice(0, 8);
+  const log = (event: string, details: Record<string, unknown> = {}) =>
+    console.info(`[ManjuPerf] ${JSON.stringify({ at: new Date().toISOString(), traceId, event, elapsedMs: Math.round(performance.now() - requestStarted), ...details })}`);
   try {
     const params = request.nextUrl.searchParams;
     const asset = (params.get('asset') || 'NIFTY') as Asset;
@@ -409,6 +415,7 @@ export async function GET(request: NextRequest) {
     const side = params.get('side') === 'PE' ? 'pe' : 'ce';
     const wantedStrike = Number(params.get('strike') || 0);
     const stockSecurityId = Number(params.get('securityId') || 0);
+    log('snapshot.start', { asset, underlyingTimeframe, optionTimeframe, side, wantedStrike, stockSecurityId, optionsOnly: params.get('optionsOnly') === '1', prefetch: params.get('prefetch') === '1' });
     if (stockSecurityId > 0) {
       const stockSegment = params.get('segment') || 'NSE_EQ';
       const stockInstrument = params.get('instrument') || 'EQUITY';
@@ -416,6 +423,22 @@ export async function GET(request: NextRequest) {
       const optionSegment = isIndex && params.get('exchange') === 'BSE' ? 'BSE_FNO' : 'NSE_FNO';
       const optionInstrument = isIndex ? 'OPTIDX' : 'OPTSTK';
       const optionSecurityId = Number(params.get('optionSecurityId') || 0);
+      if (params.get('chartsOnly') === '1') {
+        const stockSpec = { securityId: stockSecurityId, segment: stockSegment, instrument: stockInstrument };
+        const optionSpec = optionSecurityId > 0
+          ? { securityId: optionSecurityId, segment: optionSegment, instrument: optionInstrument }
+          : null;
+        const [underlyingCandles, optionCandles] = await Promise.all([
+          history(stockSpec, underlyingTimeframe),
+          optionSpec ? history(optionSpec, optionTimeframe) : Promise.resolve([]),
+        ]);
+        log('snapshot.charts.done', { underlyingCandles: underlyingCandles.length, optionCandles: optionCandles.length });
+        return NextResponse.json({ connected: true, chartsOnly: true, asset: 'STOCK', symbol: params.get('symbol') || '', optionSecurityId, underlyingCandles, optionCandles, underlyingTimeframe, optionTimeframe, updatedAt: new Date().toISOString() }, { headers: {
+          'Cache-Control': 'no-store',
+          'Server-Timing': `charts;dur=${(performance.now() - requestStarted).toFixed(1)}`,
+          'X-Manju-Trace': traceId,
+        } });
+      }
       if (params.get('optionsOnly') === '1') {
         if (!Number.isSafeInteger(optionSecurityId) || optionSecurityId <= 0 || wantedStrike <= 0)
           return NextResponse.json({ error: 'Invalid stock option contract' }, { status: 400 });
@@ -435,6 +458,7 @@ export async function GET(request: NextRequest) {
           history(optionSpec, optionTimeframe),
           optionDayOpen(optionSpec),
         ]);
+        log('snapshot.options.done', { candles: optionCandles.length });
         return NextResponse.json({
           connected: true,
           optionsOnly: true,
@@ -450,6 +474,7 @@ export async function GET(request: NextRequest) {
         }, { headers: {
           'Cache-Control': 'no-store',
           'Server-Timing': `snapshot;dur=${(performance.now() - requestStarted).toFixed(1)}`,
+          'X-Manju-Trace': traceId,
         } });
       }
       const stockSpec = {
@@ -527,6 +552,7 @@ export async function GET(request: NextRequest) {
             optionDayOpen(optionSpec),
           ])
         : [[], 0];
+      log('snapshot.stock.done', { underlyingCandles: underlyingCandles.length, optionCandles: optionCandles.length, chainRows: chain.length });
       return NextResponse.json(
         {
           connected: true,
@@ -549,7 +575,7 @@ export async function GET(request: NextRequest) {
           optionTimeframe,
           updatedAt: new Date().toISOString(),
         },
-        { headers: { 'Cache-Control': 'no-store' } },
+        { headers: { 'Cache-Control': 'no-store', 'Server-Timing': `snapshot;dur=${(performance.now() - requestStarted).toFixed(1)}`, 'X-Manju-Trace': traceId } },
       );
     }
     const spec = ASSETS[asset];
@@ -581,6 +607,23 @@ export async function GET(request: NextRequest) {
       }, { headers: { 'Cache-Control': 'no-store' } });
     }
     const optionSecurityId = Number(params.get('optionSecurityId') || 0);
+    if (params.get('chartsOnly') === '1') {
+      const optionSpec = optionSecurityId > 0 ? {
+        securityId: optionSecurityId,
+        segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO',
+        instrument: 'OPTIDX',
+      } : null;
+      const [underlyingCandles, optionCandles] = await Promise.all([
+        history(spec, underlyingTimeframe),
+        optionSpec ? history(optionSpec, optionTimeframe) : Promise.resolve([]),
+      ]);
+      log('snapshot.charts.done', { underlyingCandles: underlyingCandles.length, optionCandles: optionCandles.length });
+      return NextResponse.json({ connected: true, chartsOnly: true, asset, optionSecurityId, underlyingCandles, optionCandles, underlyingTimeframe, optionTimeframe, updatedAt: new Date().toISOString() }, { headers: {
+        'Cache-Control': 'no-store',
+        'Server-Timing': `charts;dur=${(performance.now() - requestStarted).toFixed(1)}`,
+        'X-Manju-Trace': traceId,
+      } });
+    }
     if (params.get('optionsOnly') === '1') {
       if (!Number.isSafeInteger(optionSecurityId) || optionSecurityId <= 0 || wantedStrike <= 0)
         return NextResponse.json({ error: 'Invalid option contract' }, { status: 400 });
@@ -596,12 +639,14 @@ export async function GET(request: NextRequest) {
       const [optionCandles, open] = await Promise.all([
         history(optionSpec, optionTimeframe), optionDayOpen(optionSpec),
       ]);
+      log('snapshot.options.done', { candles: optionCandles.length });
       return NextResponse.json({ connected: true, optionsOnly: true, asset,
         optionSecurityId, selectedStrike: wantedStrike, side: side.toUpperCase(), optionCandles,
         optionDayOpen: open, optionTimeframe, updatedAt: new Date().toISOString() },
         { headers: {
           'Cache-Control': 'no-store',
           'Server-Timing': `snapshot;dur=${(performance.now() - requestStarted).toFixed(1)}`,
+          'X-Manju-Trace': traceId,
         } });
     }
     const expiryResponse = await dhan('/optionchain/expirylist', {
@@ -689,6 +734,7 @@ export async function GET(request: NextRequest) {
       spot,
     );
     const weeklyOpen = stableWeeklyOpen(spec, dailyCandles, dayOpen);
+    log('snapshot.index.done', { underlyingCandles: underlyingCandles.length, optionCandles: optionCandles.length, chainRows: chain.length });
     return NextResponse.json(
       {
         connected: true,
@@ -713,12 +759,13 @@ export async function GET(request: NextRequest) {
         optionTimeframe,
         updatedAt: new Date().toISOString(),
       },
-      { headers: { 'Cache-Control': 'no-store' } },
+      { headers: { 'Cache-Control': 'no-store', 'Server-Timing': `snapshot;dur=${(performance.now() - requestStarted).toFixed(1)}`, 'X-Manju-Trace': traceId } },
     );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Dhan request failed';
     const status = message === 'DHAN_NOT_CONFIGURED' ? 503 : 502;
+    log('snapshot.error', { message });
     return NextResponse.json(
       {
         connected: false,

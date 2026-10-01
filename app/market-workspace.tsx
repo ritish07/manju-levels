@@ -23,6 +23,14 @@ import {
   ZoomOut,
 } from 'lucide-react';
 
+function chartPerf(traceId: string, event: string, details: Record<string, unknown> = {}) {
+  console.info(`[ManjuPerf][${traceId}] ${event}`, details);
+}
+
+function newChartTrace(kind: string) {
+  return `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
 type AssetKey = 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
 type Side = 'CE' | 'PE';
 type IndexWorkspaceView =
@@ -1786,6 +1794,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     );
     setChartsLoading(!currentChartsReady);
     const load = async () => {
+      const traceId = newChartTrace('chart');
+      const loadStarted = performance.now();
       try {
         const query = new URLSearchParams({
           asset,
@@ -1802,6 +1812,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           query.set('exchange', selectedStock.exchange);
         }
         if (expiry) query.set('expiry', expiry);
+        query.set('trace', traceId);
         const existing = liveRef.current;
         const contract = existing?.chain.find((row) => row.strike === selectedStrike)?.[side === 'CE' ? 'ce' : 'pe'];
         const matchingFeed = selectedStock
@@ -1812,16 +1823,45 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (!selectedEquity && matchingFeed && underlyingAlreadyCurrent && contract && (changedContract || Date.now() - lastFullSnapshot.current < 20000)) {
           query.set('optionsOnly', '1');
           query.set('optionSecurityId', String(contract.securityId));
+        } else if (matchingFeed && existing && (selectedEquity || contract) && (
+          existing.underlyingTimeframe !== underlyingTimeframe ||
+          existing.optionTimeframe !== optionTimeframe
+        )) {
+          // Timeframe changes need candles only. Re-fetching expiries, option
+          // chain, futures and quote metadata made a simple interval switch as
+          // expensive as changing the entire instrument.
+          query.set('chartsOnly', '1');
+          if (contract) query.set('optionSecurityId', String(contract.securityId));
         }
+        chartPerf(traceId, 'load.start', { asset, symbol: selectedStock?.symbol, underlyingTimeframe, optionTimeframe, side, strike: selectedStrike, expiry });
         const response = await fetch(`/manju/api/dhan/snapshot?${query}`, {
           signal: controller.signal,
           cache: 'no-store',
+          headers: { 'X-Manju-Trace': traceId },
         });
+        const responseAt = performance.now();
+        chartPerf(traceId, 'response.headers', { fetchMs: Math.round(responseAt - loadStarted), status: response.status, serverTiming: response.headers.get('server-timing'), serverTrace: response.headers.get('x-manju-trace') });
         const data: any = await response.json();
+        chartPerf(traceId, 'response.parsed', { parseMs: Math.round(performance.now() - responseAt), totalMs: Math.round(performance.now() - loadStarted), underlyingCandles: data.underlyingCandles?.length || 0, optionCandles: data.optionCandles?.length || 0, chainRows: data.chain?.length || 0, optionsOnly: Boolean(data.optionsOnly) });
         if (!response.ok)
           throw new Error(data.error || 'Dhan feed unavailable');
         if (!active) return;
-        if (data.optionsOnly) {
+        if (data.chartsOnly) {
+          setLive((previous) => previous ? {
+            ...previous,
+            underlyingTimeframe: data.underlyingTimeframe,
+            optionTimeframe: data.optionTimeframe,
+            underlyingCandles: sanitizeLatestCandle(data.underlyingCandles || []),
+            optionCandles: sanitizeLatestCandle(
+              data.optionCandles || [],
+              previous.chain.find((row) => row.strike === selectedStrike)
+                ?.[side === 'CE' ? 'ce' : 'pe']?.ltp || 0,
+            ),
+            updatedAt: data.updatedAt,
+          } : previous);
+          if ((data.underlyingCandles || []).length > 0 && (selectedEquity || (data.optionCandles || []).length > 0))
+            setChartsLoading(false);
+        } else if (data.optionsOnly) {
           setLive((previous) => {
             if (!previous) return previous;
             const selectedLeg = previous.chain.find(
@@ -1915,6 +1955,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           if (underlyingReady && (selectedEquity || optionReady))
             setChartsLoading(false);
         }
+        requestAnimationFrame(() => requestAnimationFrame(() => chartPerf(traceId, 'render.ready', { totalMs: Math.round(performance.now() - loadStarted) })));
         // Keep the visible strike synchronized with the exact contract Dhan
         // returned (important after changing the underlying or expiry).
         if (data.selectedStrike && data.selectedStrike !== selectedStrike)
@@ -1922,6 +1963,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         setFeedError('');
         if (data.expiry && data.expiry !== expiry) setExpiry(data.expiry);
       } catch (error) {
+        chartPerf(traceId, error instanceof DOMException && error.name === 'AbortError' ? 'load.aborted' : 'load.error', { totalMs: Math.round(performance.now() - loadStarted), message: error instanceof Error ? error.message : String(error) });
         if (active) {
           setLive(null);
           setChartsLoading(false);
@@ -1997,28 +2039,6 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     }, 1800);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [asset, expiry, optionTimeframe, selectedAdditionalIndex, selectedEquity, selectedStock, selectedStrike, side, underlyingTimeframe]);
-  useEffect(() => {
-    if (selectedStock || !live?.connected) return;
-    const controller = new AbortController();
-    const otherAssets = (Object.keys(ASSETS) as AssetKey[]).filter((key) => key !== asset);
-    const timers = otherAssets.map((nextAsset, index) => setTimeout(() => {
-      const query = new URLSearchParams({
-        asset: nextAsset,
-        underlyingTimeframe,
-        optionTimeframe,
-        side,
-        strike: '0',
-      });
-      void fetch(`/manju/api/dhan/snapshot?${query}`, {
-        signal: controller.signal,
-        cache: 'no-store',
-      }).catch(() => {});
-    }, 3500 + index * 4500));
-    return () => {
-      timers.forEach(clearTimeout);
-      controller.abort();
-    };
-  }, [asset, live?.connected, optionTimeframe, selectedStock, side, underlyingTimeframe]);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;

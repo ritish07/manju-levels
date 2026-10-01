@@ -6,15 +6,25 @@ let quoteStartQueue: Promise<unknown> = Promise.resolve();
 let chainStartQueue: Promise<unknown> = Promise.resolve();
 let lastChart = 0;
 const cache = new Map<string, {expires: number; staleExpires: number; promise: Promise<any>}>();
+let requestSequence = 0;
+function perf(event: string, details: Record<string, unknown>) {
+  console.info(`[ManjuPerf] ${JSON.stringify({ at: new Date().toISOString(), event, ...details })}`);
+}
 export async function dhan(path: string, body: object, cacheMs?: number): Promise<any> {
   const key = path + JSON.stringify(body);
+  const requestId = ++requestSequence;
+  const started = performance.now();
   const hit = cache.get(key);
-  if (hit && hit.expires > Date.now()) return hit.promise;
+  if (hit && hit.expires > Date.now()) {
+    perf('dhan.cache.hit', { requestId, path, ageMs: Math.round(performance.now() - started) });
+    return hit.promise;
+  }
   if (hit && hit.staleExpires > Date.now()) {
     // Return the last verified snapshot immediately, then refresh it in the
     // background. The live quote path continues to update the final candle.
     cache.delete(key);
     void dhan(path, body, cacheMs).catch(() => {});
+    perf('dhan.cache.stale', { requestId, path });
     return hit.promise;
   }
   const isChart = path.startsWith('/charts/');
@@ -46,6 +56,8 @@ export async function dhan(path: string, body: object, cacheMs?: number): Promis
   if (isQuote) quoteStartQueue = gate;
   if (isOptionChain) chainStartQueue = gate;
   const task = gate.then(async () => {
+    const queueMs = performance.now() - started;
+    perf('dhan.network.start', { requestId, path, queueMs: Math.round(queueMs) });
     for (let attempt = 0; attempt < 2; attempt++) {
       const headers = await dhanHeaders();
       const response = await fetch(`https://api.dhan.co/v2${path}`, {method: 'POST', headers, body: JSON.stringify(body), cache: 'no-store', signal: AbortSignal.timeout(25000)});
@@ -57,7 +69,11 @@ export async function dhan(path: string, body: object, cacheMs?: number): Promis
         invalidateToken(headers['access-token']);
         if (attempt === 0) continue;
       }
-      if (!response.ok || data?.status === 'failure' || rejected) throw new Error(message);
+      if (!response.ok || data?.status === 'failure' || rejected) {
+        perf('dhan.network.error', { requestId, path, status: response.status, attempt, totalMs: Math.round(performance.now() - started) });
+        throw new Error(message);
+      }
+      perf('dhan.network.done', { requestId, path, status: response.status, attempt, queueMs: Math.round(queueMs), networkMs: Math.round(performance.now() - started - queueMs), totalMs: Math.round(performance.now() - started) });
       return data;
     }
   });
