@@ -25,7 +25,14 @@ import {
 
 type AssetKey = 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
 type Side = 'CE' | 'PE';
-type IndexWorkspaceView = 'ALL' | 'UNDERLYING' | 'OPTION' | 'CHAIN';
+type IndexWorkspaceView =
+  | 'ALL'
+  | 'UNDERLYING'
+  | 'OPTION'
+  | 'CHAIN'
+  | 'OPTION_CHAIN'
+  | 'UNDERLYING_OPTION'
+  | 'UNDERLYING_CHAIN';
 type Timeframe = '1m' | '3m' | '5m' | '15m' | '30m' | '1H' | '4H' | 'D' | 'M';
 type Candle = {
   timestamp?: number;
@@ -489,7 +496,7 @@ function makeIntradayLevels(open: number, step: number): ChartLevel[] {
   ];
 }
 
-function makeStockLevels(open: number): ChartLevel[] {
+function makeStockIntradayLevels(open: number): ChartLevel[] {
   if (!(open > 0)) return [];
   const root = Math.sqrt(open);
   const support = (root - 1) ** 2;
@@ -503,6 +510,65 @@ function makeStockLevels(open: number): ChartLevel[] {
       color: lowerHalf ? '#2e9b67' : '#d94b52',
     };
   });
+}
+
+function makeStockWeeklyLevels(open: number): ChartLevel[] {
+  if (!(open > 0)) return [];
+  const root = Math.sqrt(open);
+  return Array.from({ length: 3 }, (_, index) => {
+    const step = index + 1;
+    return [
+      {
+        value: (root + step) ** 2,
+        label: `R${step}`,
+        color: '#d94b52',
+      },
+      {
+        // This is the spreadsheet formula (step - sqrt(open))².
+        // Squaring makes it equivalent to (sqrt(open) - step)².
+        value: (step - root) ** 2,
+        label: `S${step}`,
+        color: '#2e9b67',
+      },
+    ];
+  }).flat();
+}
+
+function makeOtherIndexIntradayLevels(open: number): ChartLevel[] {
+  if (!(open > 0)) return [];
+  const root = Math.sqrt(open);
+  const support = (root - 1) ** 2;
+  const resistance = (root + 1) ** 2;
+  // Eighteen displayed levels, including the lower and upper boundaries.
+  const step = (resistance - support) / 17;
+  return Array.from({ length: 18 }, (_, index) => {
+    const lowerHalf = index < 9;
+    return {
+      value: support + index * step,
+      label: lowerHalf ? `S${9 - index}` : `R${index - 8}`,
+      color: lowerHalf ? '#2e9b67' : '#d94b52',
+    };
+  });
+}
+
+function makeOtherIndexWeeklyLevels(open: number): ChartLevel[] {
+  if (!(open > 0)) return [];
+  const root = Math.sqrt(open);
+  return Array.from({ length: 6 }, (_, index) => {
+    const step = index + 1;
+    return [
+      {
+        value: (root + step) ** 2,
+        label: `R${step}`,
+        color: '#d94b52',
+      },
+      {
+        value: (step - root) ** 2,
+        label: `S${step}`,
+        color: '#2e9b67',
+      },
+    ];
+  }).flat();
 }
 
 function ResizeHandle({ onDrag }: { onDrag: (deltaX: number) => void }) {
@@ -822,13 +888,20 @@ function Chart({
               {TIMEFRAMES.map((value) => <option key={value}>{value}</option>)}
             </select>
           </label>
-          {levelMode && onLevelModeChange && <label className="chart-select level-basis-select">
-            <span>LEVELS</span>
-            <select value={levelMode} onChange={(event) => onLevelModeChange(event.target.value as 'INTRADAY' | 'WEEKLY')}>
-              <option value="INTRADAY">Intraday</option>
-              <option value="WEEKLY">Weekly</option>
-            </select>
-          </label>}
+          {levelMode && onLevelModeChange && <div className="level-mode-tabs" role="tablist" aria-label="Level calculation period">
+            {(['INTRADAY', 'WEEKLY'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                aria-selected={levelMode === mode}
+                className={levelMode === mode ? 'active' : ''}
+                onClick={() => onLevelModeChange(mode)}
+              >
+                {mode === 'INTRADAY' ? 'Intraday' : 'Weekly'}
+              </button>
+            ))}
+          </div>}
           <button
             aria-label="Zoom out"
             onClick={() => applyHorizontalZoom(zoom / 1.25)}
@@ -1567,6 +1640,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [chainView, setChainView] = useState<'ALL' | 'CALLS' | 'PUTS'>('ALL');
   const [showLevels, setShowLevels] = useState(true);
   const [levelMode, setLevelMode] = useState<'INTRADAY' | 'WEEKLY'>('WEEKLY');
+  const [stockLevelMode, setStockLevelMode] = useState<'INTRADAY' | 'WEEKLY'>('INTRADAY');
   const [showSpot, setShowSpot] = useState(true);
   const [showBothOptions, setShowBothOptions] = useState(false);
   const [oppositeOption, setOppositeOption] = useState<{
@@ -2112,16 +2186,22 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const optionCandles = optionSelectionMatches && live?.optionCandles?.length
     ? live.optionCandles
     : [];
-  const weeklyOpen = live?.weeklyOpen || meta.weeklyOpen;
-  const dayOpen = live?.dayOpen || meta.spot;
+  const weeklyOpen = selectedStock ? live?.weeklyOpen || 0 : live?.weeklyOpen || meta.weeklyOpen;
+  const dayOpen = selectedStock ? live?.dayOpen || 0 : live?.dayOpen || meta.spot;
+  const activeLevelMode = selectedStock ? stockLevelMode : levelMode;
+  const selectedOtherIndex = selectedStock?.instrument === 'INDEX';
   const underlyingLevels = selectedStock
-    ? makeStockLevels(dayOpen)
-    : levelMode === 'WEEKLY'
+    ? selectedOtherIndex
+      ? activeLevelMode === 'WEEKLY'
+        ? makeOtherIndexWeeklyLevels(weeklyOpen)
+        : makeOtherIndexIntradayLevels(dayOpen)
+      : activeLevelMode === 'WEEKLY'
+        ? makeStockWeeklyLevels(weeklyOpen)
+        : makeStockIntradayLevels(dayOpen)
+    : activeLevelMode === 'WEEKLY'
       ? makeWeeklyLevels(weeklyOpen)
       : makeIntradayLevels(dayOpen, meta.intradayStep);
-  const underlyingOpen = selectedStock
-    ? dayOpen
-    : levelMode === 'WEEKLY' ? weeklyOpen : dayOpen;
+  const underlyingOpen = activeLevelMode === 'WEEKLY' ? weeklyOpen : dayOpen;
   const underlyingChartLevels = [
     ...underlyingLevels,
     { value: underlyingOpen, label: 'OPEN', color: '#f28c18' },
@@ -2279,10 +2359,22 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       clearTimeout(timer);
     };
   }, [asset, hoveredOption, selectedStock]);
-  const showChartsArea = Boolean(selectedStock) || indexWorkspaceView !== 'CHAIN';
-  const showChainArea = Boolean(selectedStock) || indexWorkspaceView === 'ALL' || indexWorkspaceView === 'CHAIN';
-  const showUnderlyingPane = Boolean(selectedStock) || indexWorkspaceView === 'UNDERLYING' || (indexWorkspaceView === 'ALL' && showSpot);
-  const showOptionPane = !selectedStock && (indexWorkspaceView === 'ALL' || indexWorkspaceView === 'OPTION');
+  const viewHasUnderlying = indexWorkspaceView === 'UNDERLYING' ||
+    indexWorkspaceView === 'UNDERLYING_OPTION' ||
+    indexWorkspaceView === 'UNDERLYING_CHAIN';
+  const viewHasOption = indexWorkspaceView === 'OPTION' ||
+    indexWorkspaceView === 'OPTION_CHAIN' ||
+    indexWorkspaceView === 'UNDERLYING_OPTION';
+  const viewHasChain = indexWorkspaceView === 'CHAIN' ||
+    indexWorkspaceView === 'OPTION_CHAIN' ||
+    indexWorkspaceView === 'UNDERLYING_CHAIN';
+  const isTwoPanelView = indexWorkspaceView === 'OPTION_CHAIN' ||
+    indexWorkspaceView === 'UNDERLYING_OPTION' ||
+    indexWorkspaceView === 'UNDERLYING_CHAIN';
+  const showChartsArea = Boolean(selectedStock) || indexWorkspaceView === 'ALL' || viewHasUnderlying || viewHasOption;
+  const showChainArea = Boolean(selectedStock) || indexWorkspaceView === 'ALL' || viewHasChain;
+  const showUnderlyingPane = Boolean(selectedStock) || viewHasUnderlying || (indexWorkspaceView === 'ALL' && showSpot);
+  const showOptionPane = !selectedStock && (indexWorkspaceView === 'ALL' || viewHasOption);
   const showOppositePane = showOptionPane && indexWorkspaceView === 'ALL' && showBothOptions;
   return (
     <main className={`app-shell ${darkMode ? 'dark' : ''}`} aria-busy={chartsLoading}>
@@ -2386,6 +2478,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
               <option value="UNDERLYING">Underlying only</option>
               <option value="OPTION">Option chart only</option>
               <option value="CHAIN">Option chain only</option>
+              <option value="OPTION_CHAIN">Option chart + chain</option>
+              <option value="UNDERLYING_OPTION">Underlying + option chart</option>
+              <option value="UNDERLYING_CHAIN">Underlying + option chain</option>
             </select>
             <ChevronDown />
           </label>}
@@ -2448,14 +2543,18 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         className="workspace"
         style={{
           gridTemplateColumns: showChartsArea && showChainArea
-            ? `minmax(0, ${100 - chainPercent}fr) 6px minmax(0, ${chainPercent}fr)`
+            ? isTwoPanelView
+              ? 'minmax(0, 1fr) 6px minmax(0, 1fr)'
+              : `minmax(0, ${100 - chainPercent}fr) 6px minmax(0, ${chainPercent}fr)`
             : 'minmax(0, 1fr)',
         }}
       >
         {showChartsArea && <div
           className="charts-grid"
           style={{
-            gridTemplateColumns: selectedStock || indexWorkspaceView !== 'ALL'
+            gridTemplateColumns: indexWorkspaceView === 'UNDERLYING_OPTION'
+              ? 'repeat(2, minmax(0, 1fr))'
+              : selectedStock || indexWorkspaceView !== 'ALL'
               ? 'minmax(0, 1fr)'
               : showBothOptions
               ? `repeat(${showSpot ? 3 : 2}, minmax(0, 1fr))`
@@ -2471,14 +2570,14 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                 ? `${selectedStock.symbol} · ${selectedStock.name}`
                 : meta.name
             }
-            subtitle={`${underlyingTimeframe} · ${selectedStock ? `NSE · Day open ${formatPrice(dayOpen)}` : `NSE · ${levelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(levelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}`}
+            subtitle={`${underlyingTimeframe} · NSE · ${activeLevelMode === 'WEEKLY' ? 'Weekly' : 'Day'} open ${formatPrice(activeLevelMode === 'WEEKLY' ? weeklyOpen : dayOpen)}`}
             candles={underlying}
             levels={showLevels ? underlyingChartLevels : []}
             previousClose={underlyingPreviousClose}
             timeframe={underlyingTimeframe}
             onTimeframeChange={setUnderlyingTimeframe}
-            levelMode={selectedStock ? undefined : levelMode}
-            onLevelModeChange={selectedStock ? undefined : setLevelMode}
+            levelMode={activeLevelMode}
+            onLevelModeChange={selectedStock ? setStockLevelMode : setLevelMode}
             accent={activeChart === 'UNDERLYING'}
             onActivate={() => setActiveChart('UNDERLYING')}
             darkMode={darkMode}
@@ -2554,19 +2653,15 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             />
           ) : null}
         </div>}
-        {showChartsArea && showChainArea && <ResizeHandle
-          onDrag={(delta) =>
-            setChainPercent((value) =>
-              Math.min(
-                45,
-                Math.max(
-                  20,
-                  value - (delta / Math.max(window.innerWidth, 1)) * 100,
-                ),
-              ),
-            )
-          }
-        />}
+        {showChartsArea && showChainArea && (isTwoPanelView
+          ? <div className="pane-divider fixed" aria-hidden="true" />
+          : <ResizeHandle
+              onDrag={(delta) =>
+                setChainPercent((value) =>
+                  Math.min(45, Math.max(20, value - (delta / Math.max(window.innerWidth, 1)) * 100)),
+                )
+              }
+            />)}
         {showChainArea && <aside className="chain-panel">
           {selectedStock && live && !live.expiries?.length && (
             <div className="stock-chain-disabled">
