@@ -287,6 +287,21 @@ async function history(
 // because a pre-market request can otherwise cache the previous session's
 // first candle as today's option open.
 const optionOpens = new Map<string, number>();
+function optionOpenFromCandles(
+  spec: { securityId: number; segment: string },
+  candles: Candle[],
+) {
+  const key = `${tradingDate()}:${spec.segment}:${spec.securityId}`;
+  const cached = optionOpens.get(key);
+  if (cached && cached > 0) return cached;
+  const latest = candles.at(-1);
+  const sessionDate = latest ? tradingDate(latest.timestamp) : '';
+  const open = sessionDate
+    ? candles.find((candle) => tradingDate(candle.timestamp) === sessionDate)?.open || 0
+    : 0;
+  if (open > 0 && sessionDate === tradingDate()) optionOpens.set(key, open);
+  return open;
+}
 async function optionDayOpen(spec: { securityId: number; segment: string; instrument: string }) {
   const key = `${tradingDate()}:${spec.segment}:${spec.securityId}`;
   if (optionOpens.has(key)) return optionOpens.get(key)!;
@@ -454,10 +469,10 @@ export async function GET(request: NextRequest) {
             'Server-Timing': `prefetch;dur=${(performance.now() - requestStarted).toFixed(1)}`,
           } });
         }
-        const [optionCandles, open] = await Promise.all([
-          history(optionSpec, optionTimeframe),
-          optionDayOpen(optionSpec),
-        ]);
+        const optionCandles = await history(optionSpec, optionTimeframe);
+        // The session open is already present in the returned history. Avoid a
+        // second rate-limited quote request on every strike click.
+        const open = optionOpenFromCandles(optionSpec, optionCandles) || await optionDayOpen(optionSpec);
         log('snapshot.options.done', { candles: optionCandles.length });
         return NextResponse.json({
           connected: true,
@@ -546,12 +561,12 @@ export async function GET(request: NextRequest) {
         segment: optionSegment,
         instrument: optionInstrument,
       } : null;
-      const [optionCandles, open] = isIndex && optionSpec
-        ? await Promise.all([
-            history(optionSpec, optionTimeframe),
-            optionDayOpen(optionSpec),
-          ])
-        : [[], 0];
+      const optionCandles = isIndex && optionSpec
+        ? await history(optionSpec, optionTimeframe)
+        : [];
+      const open = isIndex && optionSpec
+        ? optionOpenFromCandles(optionSpec, optionCandles) || await optionDayOpen(optionSpec)
+        : 0;
       log('snapshot.stock.done', { underlyingCandles: underlyingCandles.length, optionCandles: optionCandles.length, chainRows: chain.length });
       return NextResponse.json(
         {
@@ -636,9 +651,8 @@ export async function GET(request: NextRequest) {
           'Server-Timing': `prefetch;dur=${(performance.now() - requestStarted).toFixed(1)}`,
         } });
       }
-      const [optionCandles, open] = await Promise.all([
-        history(optionSpec, optionTimeframe), optionDayOpen(optionSpec),
-      ]);
+      const optionCandles = await history(optionSpec, optionTimeframe);
+      const open = optionOpenFromCandles(optionSpec, optionCandles) || await optionDayOpen(optionSpec);
       log('snapshot.options.done', { candles: optionCandles.length });
       return NextResponse.json({ connected: true, optionsOnly: true, asset,
         optionSecurityId, selectedStrike: wantedStrike, side: side.toUpperCase(), optionCandles,
@@ -649,6 +663,13 @@ export async function GET(request: NextRequest) {
           'X-Manju-Trace': traceId,
         } });
     }
+    // Start all asset-independent work immediately. Previously these requests
+    // waited until both expiry and option-chain calls completed, adding their
+    // latency serially during NIFTY/BANKNIFTY/SENSEX switches.
+    const underlyingPromise = history(spec, underlyingTimeframe);
+    const dailyPromise = history(spec, 'D');
+    const quotePromise = marketOhlc(spec);
+    const futurePromise = indexFutureQuote(asset);
     const expiryResponse = await dhan('/optionchain/expirylist', {
       UnderlyingScrip: spec.securityId,
       UnderlyingSeg: spec.segment,
@@ -707,26 +728,23 @@ export async function GET(request: NextRequest) {
       ? chain.find((row) => row.strike === wantedStrike) || nearestAtm
       : nearestAtm;
     const contract = selected?.[side];
-    const [underlyingCandles, optionCandles, open, future, dailyCandles, quoteOhlc] = await Promise.all([
-      history(spec, underlyingTimeframe),
+    const optionSpec = contract ? {
+      securityId: contract.securityId,
+      segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO',
+      instrument: 'OPTIDX',
+    } : null;
+    const [underlyingCandles, optionCandles, future, dailyCandles, quoteOhlc] = await Promise.all([
+      underlyingPromise,
       contract
-        ? history(
-            {
-              securityId: contract.securityId,
-              segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO',
-              instrument: 'OPTIDX',
-            },
-            optionTimeframe,
-          )
+        ? history(optionSpec!, optionTimeframe)
         : Promise.resolve([]),
-      contract
-        ? optionDayOpen({ securityId: contract.securityId,
-            segment: asset === 'SENSEX' ? 'BSE_FNO' : 'NSE_FNO', instrument: 'OPTIDX' })
-        : Promise.resolve(0),
-      indexFutureQuote(asset),
-      history(spec, 'D'),
-      marketOhlc(spec),
+      futurePromise,
+      dailyPromise,
+      quotePromise,
     ]);
+    const open = optionSpec
+      ? optionOpenFromCandles(optionSpec, optionCandles) || await optionDayOpen(optionSpec)
+      : 0;
     const dayOpen = stableDayOpen(
       spec,
       dailyCandles,

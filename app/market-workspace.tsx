@@ -2006,12 +2006,11 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (leg?.securityId)
           candidates.push({ strike, side: wantedSide, securityId: leg.securityId });
       };
-      const oppositeSide: Side = side === 'CE' ? 'PE' : 'CE';
-      add(selectedStrike, oppositeSide);
+      // Warm only the two most likely next clicks. The previous five-contract
+      // fan-out continued running on the server after browser cancellation and
+      // could occupy Dhan chart capacity ahead of the user's actual click.
       add(selectedStrike - step, side);
       add(selectedStrike + step, side);
-      add(selectedStrike - step, oppositeSide);
-      add(selectedStrike + step, oppositeSide);
       for (const candidate of candidates) {
         const query = new URLSearchParams({
           asset,
@@ -2036,7 +2035,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           cache: 'no-store',
         }).catch(() => {});
       }
-    }, 1800);
+    }, 3000);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [asset, expiry, optionTimeframe, selectedAdditionalIndex, selectedEquity, selectedStock, selectedStrike, side, underlyingTimeframe]);
   useEffect(() => {

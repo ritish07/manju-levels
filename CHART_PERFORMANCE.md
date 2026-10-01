@@ -38,3 +38,9 @@ that trace ID from the browser and the server.
   The 30-minute chart is built from 15-minute data and the 4-hour chart from hourly data.
 - Historical responses use request coalescing and stale-while-revalidate caching.
 - Background full-asset prefetches were removed because they could block a visible user request.
+- Strike changes derive the immutable session open from the returned candle history,
+  avoiding a second rate-limited market-quote call.
+- Full asset switches overlap underlying history, daily history, OHLC and futures
+  work with expiry/option-chain loading instead of running those stages serially.
+- Neighbor-contract warming is limited to the two adjacent strikes so speculative
+  requests cannot saturate Dhan ahead of an actual user click.
