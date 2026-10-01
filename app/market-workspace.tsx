@@ -1679,6 +1679,8 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const [selectedStock, setSelectedStock] = useState<NseInstrument | null>(
     null,
   );
+  const selectedEquity = selectedStock?.instrument === 'EQUITY';
+  const selectedAdditionalIndex = selectedStock?.instrument === 'INDEX';
   const [symbolSearchOpen, setSymbolSearchOpen] = useState(false);
   const [symbolSearch, setSymbolSearch] = useState('');
   const [symbolFilter, setSymbolFilter] = useState<'ALL' | 'INDICES' | 'STOCKS'>('ALL');
@@ -1774,7 +1776,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       currentUnderlyingMatches &&
       currentAtStart?.underlyingTimeframe === underlyingTimeframe &&
       currentAtStart?.underlyingCandles?.length &&
-      (selectedStock || (
+      (selectedEquity || (
         currentAtStart?.selectedStrike === selectedStrike &&
         currentAtStart?.side === side &&
         currentAtStart?.expiry === expiry &&
@@ -1797,6 +1799,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           query.set('symbol', selectedStock.symbol);
           query.set('segment', selectedStock.segment);
           query.set('instrument', selectedStock.instrument);
+          query.set('exchange', selectedStock.exchange);
         }
         if (expiry) query.set('expiry', expiry);
         const existing = liveRef.current;
@@ -1806,7 +1809,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           : existing?.asset === asset && existing.expiry === expiry;
         const changedContract = existing?.selectedStrike !== selectedStrike || existing?.side !== side;
         const underlyingAlreadyCurrent = existing?.underlyingTimeframe === underlyingTimeframe;
-        if (!selectedStock && matchingFeed && underlyingAlreadyCurrent && contract && (changedContract || Date.now() - lastFullSnapshot.current < 20000)) {
+        if (!selectedEquity && matchingFeed && underlyingAlreadyCurrent && contract && (changedContract || Date.now() - lastFullSnapshot.current < 20000)) {
           query.set('optionsOnly', '1');
           query.set('optionSecurityId', String(contract.securityId));
         }
@@ -1909,7 +1912,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           });
           const underlyingReady = (data.underlyingCandles || []).length > 0;
           const optionReady = (data.optionCandles || []).length > 0;
-          if (underlyingReady && (Boolean(selectedStock) || optionReady))
+          if (underlyingReady && (selectedEquity || optionReady))
             setChartsLoading(false);
         }
         // Keep the visible strike synchronized with the exact contract Dhan
@@ -1942,9 +1945,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       controller.abort();
       clearTimeout(timer);
     };
-  }, [asset, underlyingTimeframe, optionTimeframe, side, selectedStrike, expiry, selectedStock]);
+  }, [asset, underlyingTimeframe, optionTimeframe, side, selectedStrike, expiry, selectedStock, selectedEquity]);
   useEffect(() => {
-    if (selectedStock || !expiry || !selectedStrike) return;
+    if (selectedEquity || !expiry || !selectedStrike) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       const current = liveRef.current;
@@ -1979,6 +1982,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           optionSecurityId: String(candidate.securityId),
           prefetch: '1',
         });
+        if (selectedAdditionalIndex && selectedStock) {
+          query.set('securityId', String(selectedStock.securityId));
+          query.set('symbol', selectedStock.symbol);
+          query.set('segment', selectedStock.segment);
+          query.set('instrument', selectedStock.instrument);
+          query.set('exchange', selectedStock.exchange);
+        }
         void fetch(`/manju/api/dhan/snapshot?${query}`, {
           signal: controller.signal,
           cache: 'no-store',
@@ -1986,7 +1996,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       }
     }, 1800);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [asset, expiry, optionTimeframe, selectedStock, selectedStrike, side, underlyingTimeframe]);
+  }, [asset, expiry, optionTimeframe, selectedAdditionalIndex, selectedEquity, selectedStock, selectedStrike, side, underlyingTimeframe]);
   useEffect(() => {
     if (selectedStock || !live?.connected) return;
     const controller = new AbortController();
@@ -2021,6 +2031,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
         if (selectedStock) {
           query.set('stockSecurityId', String(selectedStock.securityId));
           query.set('stockSegment', selectedStock.segment);
+          query.set('optionSegment', selectedStock.exchange === 'BSE' ? 'BSE_FNO' : 'NSE_FNO');
         }
         const currentChain = current?.chain || [];
         const strikeStep = selectedStock && currentChain.length > 1
@@ -2097,7 +2108,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
     };
   }, [asset, expiry, optionTimeframe, selectedStock, selectedStrike, side, underlyingTimeframe]);
   useEffect(() => {
-    if (selectedStock || indexWorkspaceView !== 'ALL' || !showBothOptions || !live || !selectedStrike || !expiry) {
+    if (selectedEquity || indexWorkspaceView !== 'ALL' || !showBothOptions || !live || !selectedStrike || !expiry) {
       setOppositeOption(null);
       return;
     }
@@ -2120,6 +2131,13 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       optionsOnly: '1',
       optionSecurityId: String(leg.securityId),
     });
+    if (selectedAdditionalIndex && selectedStock) {
+      query.set('securityId', String(selectedStock.securityId));
+      query.set('symbol', selectedStock.symbol);
+      query.set('segment', selectedStock.segment);
+      query.set('instrument', selectedStock.instrument);
+      query.set('exchange', selectedStock.exchange);
+    }
     fetch(`/manju/api/dhan/snapshot?${query}`, { signal: controller.signal, cache: 'no-store' })
       .then(async (response) => {
         const data = await response.json();
@@ -2135,7 +2153,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
       })
       .catch(() => { if (active) setOppositeOption(null); });
     return () => { active = false; controller.abort(); };
-  }, [asset, expiry, indexWorkspaceView, live?.optionSecurityId, optionTimeframe, selectedStock, selectedStrike, showBothOptions, side]);
+  }, [asset, expiry, indexWorkspaceView, live?.optionSecurityId, optionTimeframe, selectedAdditionalIndex, selectedEquity, selectedStock, selectedStrike, showBothOptions, side]);
   const oppositeLivePrice = showBothOptions && oppositeOption
     ? live?.chain.find((row) => row.strike === selectedStrike)
       ?.[oppositeOption.side === 'CE' ? 'ce' : 'pe']?.ltp || 0
@@ -2347,7 +2365,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           quoteOnly: '1',
           quoteSecurityId: String(hoveredOption.securityId),
         });
-        if (selectedStock) query.set('optionSegment', 'NSE_FNO');
+        if (selectedStock) query.set('optionSegment', selectedStock.exchange === 'BSE' ? 'BSE_FNO' : 'NSE_FNO');
         const response = await fetch(`/manju/api/dhan/snapshot?${query}`, { cache: 'no-store' });
         const data = await response.json();
         if (active && response.ok) setHoveredQuote({ ...data, key: hoveredOption.key });
@@ -2374,10 +2392,10 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
   const isTwoPanelView = indexWorkspaceView === 'OPTION_CHAIN' ||
     indexWorkspaceView === 'UNDERLYING_OPTION' ||
     indexWorkspaceView === 'UNDERLYING_CHAIN';
-  const showChartsArea = Boolean(selectedStock) || indexWorkspaceView === 'ALL' || viewHasUnderlying || viewHasOption;
-  const showChainArea = Boolean(selectedStock) || indexWorkspaceView === 'ALL' || viewHasChain;
-  const showUnderlyingPane = Boolean(selectedStock) || viewHasUnderlying || (indexWorkspaceView === 'ALL' && showSpot);
-  const showOptionPane = !selectedStock && (indexWorkspaceView === 'ALL' || viewHasOption);
+  const showChartsArea = selectedEquity || indexWorkspaceView === 'ALL' || viewHasUnderlying || viewHasOption;
+  const showChainArea = selectedEquity || indexWorkspaceView === 'ALL' || viewHasChain;
+  const showUnderlyingPane = selectedEquity || viewHasUnderlying || (indexWorkspaceView === 'ALL' && showSpot);
+  const showOptionPane = !selectedEquity && (indexWorkspaceView === 'ALL' || viewHasOption);
   const showOppositePane = showOptionPane && indexWorkspaceView === 'ALL' && showBothOptions;
   return (
     <main className={`app-shell ${darkMode ? 'dark' : ''}`} aria-busy={chartsLoading}>
@@ -2470,7 +2488,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           </span>
         </div>
         <div className="header-actions">
-          {!selectedStock && <label className="workspace-view-picker" title="Choose which workspace panel fills the screen">
+          {!selectedEquity && <label className="workspace-view-picker" title="Choose which workspace panel fills the screen">
             <span>VIEW</span>
             <select
               value={indexWorkspaceView}
@@ -2487,12 +2505,12 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             </select>
             <ChevronDown />
           </label>}
-          {(selectedStock || indexWorkspaceView === 'ALL') && <button
+          {(selectedEquity || indexWorkspaceView === 'ALL') && <button
             className={`levels-toggle ${showSpot ? 'on' : ''}`}
             role="switch"
             aria-checked={showSpot}
-            disabled={Boolean(selectedStock)}
-            title={selectedStock ? 'Spot chart remains visible for stocks' : 'Show or hide spot chart'}
+            disabled={selectedEquity}
+            title={selectedEquity ? 'Spot chart remains visible for stocks' : 'Show or hide spot chart'}
             onClick={() => setShowSpot((value) => !value)}
           >
             <span />
@@ -2507,7 +2525,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <span />
             Levels
           </button>
-          {!selectedStock && indexWorkspaceView === 'ALL' && <button
+          {!selectedEquity && indexWorkspaceView === 'ALL' && <button
             className={`levels-toggle ${showBothOptions ? 'on' : ''}`}
             role="switch"
             aria-checked={showBothOptions}
@@ -2557,7 +2575,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           style={{
             gridTemplateColumns: indexWorkspaceView === 'UNDERLYING_OPTION'
               ? 'repeat(2, minmax(0, 1fr))'
-              : selectedStock || indexWorkspaceView !== 'ALL'
+              : selectedEquity || indexWorkspaceView !== 'ALL'
               ? 'minmax(0, 1fr)'
               : showBothOptions
               ? `repeat(${showSpot ? 3 : 2}, minmax(0, 1fr))`
@@ -2592,7 +2610,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             drawings={underlyingDrawings}
             onDrawingsChange={updateDrawings(underlyingDrawingKey)}
           />}
-          {!selectedStock && indexWorkspaceView === 'ALL' && showSpot && !showBothOptions && <ResizeHandle
+          {!selectedEquity && indexWorkspaceView === 'ALL' && showSpot && !showBothOptions && <ResizeHandle
             onDrag={(delta) =>
               setChartSplit((value) =>
                 Math.min(
@@ -2615,7 +2633,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <Chart
               key={`option-${asset}-${expiry}-${selectedStrike}-${side}-${optionTimeframe}`}
               title={`${displayShort} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${side}`}
-              subtitle={`${optionTimeframe} · NSE F&O`}
+              subtitle={`${optionTimeframe} · ${selectedStock?.exchange === 'BSE' ? 'BSE' : 'NSE'} F&O`}
               candles={optionCandles}
               levels={showLevels ? optionChartLevels : []}
               timeframe={optionTimeframe}
@@ -2637,7 +2655,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
             <Chart
               key={`option-opposite-${asset}-${expiry}-${selectedStrike}-${oppositeOption.side}-${optionTimeframe}`}
               title={`${displayShort} ${formatExpiry(expiry)} ${selectedStrike.toLocaleString('en-IN')} ${oppositeOption.side}`}
-              subtitle={`${optionTimeframe} · NSE F&O`}
+              subtitle={`${optionTimeframe} · ${selectedStock?.exchange === 'BSE' ? 'BSE' : 'NSE'} F&O`}
               candles={oppositeOption.candles}
               levels={showLevels ? oppositeOptionChartLevels : []}
               timeframe={optionTimeframe}
@@ -2721,9 +2739,9 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
           </div>
           <div className={`chain-table view-${chainView.toLowerCase()}`}>
             <div className="chain-row chain-labels">
-              <span>{selectedStock ? 'CALL OI / VOL' : 'CALL LTP'}</span>
+              <span>{selectedEquity ? 'CALL OI / VOL' : 'CALL LTP'}</span>
               <span>STRIKE</span>
-              <span>{selectedStock ? 'PUT OI / VOL' : 'PUT LTP'}</span>
+              <span>{selectedEquity ? 'PUT OI / VOL' : 'PUT LTP'}</span>
               <span>OI PROFILE</span>
             </div>
             <div className="chain-scroll">
@@ -2753,7 +2771,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                     className={`chain-row ${isAtm ? 'atm' : ''}`}
                     key={strike}
                   >
-                    {selectedStock ? <div className="stock-option-metric call-data">
+                    {selectedEquity ? <div className="stock-option-metric call-data">
                       <b>{formatOi(oi.ce)}</b>
                       <small>OI</small>
                       <small>Vol {formatOi(row.ce?.volume || 0)}</small>
@@ -2799,7 +2817,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                       onPointerEnter={() => setLevelPopoverStrike(strike)}
                       onPointerLeave={() => setLevelPopoverStrike((current) => current === strike ? null : current)}
                       onClick={() => {
-                        if (!selectedStock) {
+                        if (!selectedEquity) {
                           setChartsLoading(true);
                           setSelectedStrike(strike);
                         }
@@ -2817,7 +2835,7 @@ export default function Home({ canViewPositions }: { canViewPositions: boolean }
                         </span>
                       )}
                     </button>
-                    {selectedStock ? <div className="stock-option-metric put-data">
+                    {selectedEquity ? <div className="stock-option-metric put-data">
                       <b>{formatOi(oi.pe)}</b>
                       <small>OI</small>
                       <small>Vol {formatOi(row.pe?.volume || 0)}</small>

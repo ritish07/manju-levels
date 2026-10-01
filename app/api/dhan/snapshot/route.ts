@@ -197,6 +197,11 @@ async function history(
   const lookbackDays =
     timeframe === 'D' || timeframe === 'M'
       ? 370
+      // Keep two calendar weeks for 30-minute charts. This reliably provides
+      // at least the previous five trading sessions even across weekends and
+      // exchange holidays, for indices, equities and option contracts alike.
+      : timeframe === '30m'
+        ? 14
       : spec.instrument.startsWith('OPT')
         ? 4
         : 12;
@@ -267,6 +272,7 @@ async function history(
     '3m': 500,
     '5m': 450,
     '15m': 300,
+    // Two weeks of 30-minute bars remain available for backward panning.
     '30m': 240,
     '1H': 180,
     '4H': 180,
@@ -406,14 +412,17 @@ export async function GET(request: NextRequest) {
     if (stockSecurityId > 0) {
       const stockSegment = params.get('segment') || 'NSE_EQ';
       const stockInstrument = params.get('instrument') || 'EQUITY';
+      const isIndex = stockInstrument === 'INDEX';
+      const optionSegment = isIndex && params.get('exchange') === 'BSE' ? 'BSE_FNO' : 'NSE_FNO';
+      const optionInstrument = isIndex ? 'OPTIDX' : 'OPTSTK';
       const optionSecurityId = Number(params.get('optionSecurityId') || 0);
       if (params.get('optionsOnly') === '1') {
         if (!Number.isSafeInteger(optionSecurityId) || optionSecurityId <= 0 || wantedStrike <= 0)
           return NextResponse.json({ error: 'Invalid stock option contract' }, { status: 400 });
         const optionSpec = {
           securityId: optionSecurityId,
-          segment: 'NSE_FNO',
-          instrument: 'OPTSTK',
+          segment: optionSegment,
+          instrument: optionInstrument,
         };
         if (params.get('prefetch') === '1') {
           await history(optionSpec, optionTimeframe);
@@ -507,6 +516,17 @@ export async function GET(request: NextRequest) {
         ? chain.find((row) => row.strike === wantedStrike) || nearestAtm
         : nearestAtm;
       const contract = selected?.[side];
+      const optionSpec = contract ? {
+        securityId: contract.securityId,
+        segment: optionSegment,
+        instrument: optionInstrument,
+      } : null;
+      const [optionCandles, open] = isIndex && optionSpec
+        ? await Promise.all([
+            history(optionSpec, optionTimeframe),
+            optionDayOpen(optionSpec),
+          ])
+        : [[], 0];
       return NextResponse.json(
         {
           connected: true,
@@ -522,8 +542,8 @@ export async function GET(request: NextRequest) {
           selectedStrike: selected?.strike || 0,
           side: side.toUpperCase(),
           underlyingCandles,
-          optionCandles: [],
-          optionDayOpen: 0,
+          optionCandles,
+          optionDayOpen: open,
           optionSecurityId: contract?.securityId || 0,
           underlyingTimeframe,
           optionTimeframe,
