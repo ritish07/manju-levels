@@ -561,10 +561,13 @@ export async function GET(request: NextRequest) {
         segment: optionSegment,
         instrument: optionInstrument,
       } : null;
-      const optionCandles = isIndex && optionSpec
+      // OPTSTK history is available through the same chart endpoint as OPTIDX.
+      // Previously this was limited to indices, so an F&O stock could return a
+      // perfectly valid chain while its selected premium chart stayed empty.
+      const optionCandles = optionSpec
         ? await history(optionSpec, optionTimeframe)
         : [];
-      const open = isIndex && optionSpec
+      const open = optionSpec
         ? optionOpenFromCandles(optionSpec, optionCandles) || await optionDayOpen(optionSpec)
         : 0;
       log('snapshot.stock.done', { underlyingCandles: underlyingCandles.length, optionCandles: optionCandles.length, chainRows: chain.length });
